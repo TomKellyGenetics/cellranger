@@ -6,4 +6,4 @@ makes pandas not use eval when subsetting data frames.
 '''
 
 from pandas import *
-computation.expressions.set_use_numexpr(False)
+set_option("compute.use_numexpr", False)
