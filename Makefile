@@ -10,7 +10,7 @@ VERSION=$(shell git describe --tags --always --dirty)
 ### Rust
 RUST_SRC_PATH=$(shell pwd)/lib/rust
 export CARGO_HOME=$(RUST_SRC_PATH)/.cargo
-RUST_BINS=vdj_asm chunk_reads
+RUST_BINS=chunk_reads
 
 .PHONY: all  clean $(RUST_BINS)   louvain rust-clean 
 
