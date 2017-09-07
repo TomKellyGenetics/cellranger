@@ -8,7 +8,7 @@ fastq = { git = "https://github.com/pmarks/fastq-rs.git", branch = "master" }
 serde = "0.9"
 serde_derive = "0.9"
 serde_json = "0.9"
-docopt = "*"
+docopt = "0.6.0"
 rustc-serialize = "0.3"
 rayon = "^0.8"
 error-chain = "*"
