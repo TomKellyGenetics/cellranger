@@ -165,13 +165,13 @@ def filter_cellular_barcodes_ordmag(bc_counts, recovered_cells, total_diversity)
 
     # Get the filtered barcodes
     top_n = metrics['filtered_bcs']
-    top_bc_idx = np.sort(np.argsort(bc_counts)[::-1][0:top_n])
+    top_bc_idx = np.sort(np.argsort(bc_counts)[::-1][0:int(top_n)])
     return top_bc_idx, metrics, None
 
 def filter_cellular_barcodes_fixed_cutoff(bc_counts, cutoff):
     nonzero_bcs = len(bc_counts[bc_counts > 0])
     top_n = min(cutoff, nonzero_bcs)
-    top_bc_idx = np.sort(np.argsort(bc_counts)[::-1][0:top_n])
+    top_bc_idx = np.sort(np.argsort(bc_counts)[::-1][0:int(top_n)])
     metrics = {
         'filtered_bcs': top_n,
         'filtered_bcs_lb': top_n,
