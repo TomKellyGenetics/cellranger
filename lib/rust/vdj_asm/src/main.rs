@@ -303,7 +303,7 @@ impl<T> ReservoirSampler<T> {
     }
 }
 
-
+#[allow(unused_must_use)]
 fn asm_bc<I: Iterator<Item=bam::Record>, T: Write>(mut bam_iter: I, barcode: &str, out_prefix: &str,
                                          metrics: &mut AssemblyMetrics, assembly_outs: &mut asm::AssemblyOuts<T>,
                                          args: &Args) -> String {
@@ -382,23 +382,14 @@ fn asm_bc<I: Iterator<Item=bam::Record>, T: Write>(mut bam_iter: I, barcode: &st
     // Only keep sequences with good UMIs - these will be assembled
     println!("Reads/UMI cutoff: {}", min_umi_reads);
     let good_umis = umi_counts.get_good_umis(min_umi_reads);
-
-    println!("Observed {} read pairs with {} distinct UMIs prior to subsampling", npairs, umi_counts.len());
-    let recalculate_umi_counts = (npairs as usize) > max_readpairs_per_bc;
-    if recalculate_umi_counts {
-        umi_counts.reset_counts();
-    }
     let mut assembled_reads = Vec::new();
     for read in reads.iter() {
         if good_umis.contains(&(read.umi)) && read.umi > 0 {
             assembled_reads.push(read);
         }
-        if recalculate_umi_counts {
-            umi_counts.count_umi(read.umi);
-        }
     }
 
-    println!("Barcode {}: Assembling {:?} reads, {:?} distinct UMIs", barcode, reads.len(), umi_counts.count_good_umis(1));
+    println!("Barcode {}: Assembling {:?} reads, {:?} distinct UMIs", barcode, reads.len(), umi_counts.len());
     println!("Good UMIs: {:?}", good_umis);
 
     // Report number of reads used
@@ -413,7 +404,6 @@ fn asm_bc<I: Iterator<Item=bam::Record>, T: Write>(mut bam_iter: I, barcode: &st
 
     // Args
     let scoring = get_scoring(&args);
-
     let min_kmer_count = match args.flag_kmers {
         Some(c) => c,
         None => 2,
@@ -490,14 +480,14 @@ fn asm_bc<I: Iterator<Item=bam::Record>, T: Write>(mut bam_iter: I, barcode: &st
         contigs = result.1;
     }
 
-    println!("Assembled {} contigs in {:?} sec", contigs.len(), cc_start.to(PreciseTime::now()));
+    println!("Assembled {} contigs in {} sec", contigs.len(), cc_start.to(PreciseTime::now()));
     println!("maxrss: {}", perf::getrusage().ru_maxrss as u64);
 
 
     if args.flag_plot {
         println!("Writing gfa");
         let path = out_prefix.to_string() + "_" + &barcode + "_graph.gfa";
-        graph.graph.to_gfa(path).unwrap();
+        graph.graph.to_gfa(path);
     }
 
     if args.flag_plot_json {
@@ -800,7 +790,7 @@ pub fn get_matches(args: Args) {
     let mut num_unmapped = 0;
     let mut npairs = 0;
     let mut fq_iter = fastq::CellrangerPairedFastqIter::new(&r1_filename,
-                                                            r2_filename.as_ref(),
+                                                            r2_filename.as_ref().map(String::as_str),
                                                             args.flag_rev_strand);
 
     let cc_start = PreciseTime::now();
@@ -964,7 +954,7 @@ mod tests {
         args.flag_single_end = true;
         args.flag_min_contig = Some(150);
 
-        vdj_asm(args.clone()).unwrap(); // use all reads
+        vdj_asm(args.clone()); // use all reads
 
         let assembled_seqs = get_seqs_by_barcode(&"test/outputs/asm/test_asm_se.fasta");
 
@@ -974,6 +964,7 @@ mod tests {
 
         let mut bam = bam::Reader::from_path(Path::new(&"test/outputs/asm/test_asm_se.bam")).ok().expect("Error reading test_asm.bam");
         let (mapped, _unmapped) = count_records(&mut bam);
+        let (mapped, unmapped) = count_records(&bam);
         assert_eq!(mapped, 24);
 
         let header = bam.header();
@@ -1007,7 +998,7 @@ mod tests {
         init_test(outdir);
 
         {
-            vdj_asm(args.clone()).unwrap(); // use all read-pairs
+            vdj_asm(args.clone()); // use all read-pairs
 
             let assembled_seqs = get_seqs_by_barcode(&"test/outputs/asm/test_asm.fasta");
 
@@ -1042,7 +1033,7 @@ mod tests {
             // Use only the first 3 read-pairs per barcode per chain.
             // So in all barcodes we'll use as much data as in the last barcode.
             // 4 + 2 readpairs will be left unmapped.
-            vdj_asm(args.clone()).unwrap();
+            vdj_asm(args.clone());
 
             let assembled_seqs = get_seqs_by_barcode(&"test/outputs/asm/test_asm.fasta");
 
@@ -1058,7 +1049,7 @@ mod tests {
         {
             args.flag_min_contig = Some(250);
 
-            vdj_asm(args.clone()).unwrap();
+            vdj_asm(args.clone());
 
             let mut bam = bam::Reader::from_path(Path::new(&"test/outputs/asm/test_asm.bam")).ok().expect("Error reading test_asm.bam");
             let (_, unmapped) = count_records(&mut bam);
@@ -1074,7 +1065,7 @@ mod tests {
             args.flag_single_end = true;
             args.flag_min_contig = Some(150);
 
-            vdj_asm(args.clone()).unwrap(); // use all reads
+            vdj_asm(args.clone()); // use all reads
 
             let assembled_seqs = get_seqs_by_barcode(&"test/outputs/asm/test_asm.fasta");
 
@@ -1096,7 +1087,7 @@ mod tests {
             args.flag_single_end = true;
             args.flag_min_contig = Some(150);
 
-            vdj_asm(args.clone()).unwrap();
+            vdj_asm(args.clone());
 
             let assembled_seqs = get_seqs_by_barcode(&"test/outputs/asm/test_asm_se.fasta");
 
@@ -1118,7 +1109,7 @@ mod tests {
             args.flag_min_umi_reads = Some(1);
             args.flag_seed = Some(1);
             args.flag_min_sw_score = Some(50.0);
-            vdj_asm(args.clone()).unwrap();
+            vdj_asm(args.clone());
 
             let bam = bam::Reader::from_path(Path::new(&"test/outputs/asm/test_asm_se.bam")).ok().expect("Error reading test_asm.bam");
             let header = bam.header();

@@ -5,5 +5,5 @@ authors = ["Patrick Marks <patrick@10xgenomics.com>"]
 
 [dependencies]
 rustc-serialize = "*"
-flate2 = { git = "https://github.com/veldsla/flate2-rs.git" }
 ordered-float = "0.3.0"
+flate2 = "*"

@@ -5,7 +5,7 @@
 use utils;
 use std::io::{BufRead, BufReader, Lines, Read};
 use std::collections::{HashMap};
-use std::path::Path;
+//use std::path::Path;
 use constants::{UmiType, ReadType, RAW_UMI_TAG, PROCESSED_BC_TAG, PROCESSED_UMI_TAG, QUAL_OFFSET};
 
 pub struct CellrangerFastqHeader {
@@ -83,8 +83,8 @@ pub struct CellrangerPairedFastqIter {
 }
 
 impl CellrangerPairedFastqIter {
-    pub fn new<P: AsRef<Path>>(name1: P,
-               name2: Option<P>,
+    pub fn new(name1: &str,
+               name2: Option<&str>,
                rev_strand: bool)
                -> CellrangerPairedFastqIter {
 

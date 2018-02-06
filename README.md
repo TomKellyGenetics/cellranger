@@ -1,4 +1,4 @@
-# Building Cell Ranger 2.1.0
+# Building Cell Ranger 2.1.1
 
 This version of cellranger has minor changes for compatibility with current
 software releases. It builds cellranger 2.1.0 with minor modifications to
@@ -24,7 +24,6 @@ export GOROOT=/usr/local/go
 export GOPATH=$HOME/go
 export PATH=$GOPATH/bin:$GOROOT/bin:$PATH
 sudo ln -s /usr/lib/go-1.11/bin/go /usr/bin/go
-
 
 # Add golang to path
 export PATH=/usr/lib/go-1.9/bin:$PATH

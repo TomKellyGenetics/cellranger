@@ -305,7 +305,7 @@ fn chunk_fastq(p: &Path, nrecord: usize, out_path: &Path, out_prefix: &str,
                                                 .level(level).build(output)
                                                 .expect("Failed to init lz4 encoder")) }) as Box<dyn Write>,
             &Some(CompressionSpec{method: Gzip, ..}) =>
-                Box::new(GzEncoder::new(output, Compression::Fast)) as Box<dyn Write>,
+                Box::new(GzEncoder::new(output, Compression::fast())) as Box<dyn Write>,
             &None => Box::new(std::io::BufWriter::new(output)) as Box<dyn Write>,
         };
 
@@ -326,7 +326,7 @@ fn chunk_fastq(p: &Path, nrecord: usize, out_path: &Path, out_prefix: &str,
                                                         .level(level).build(output)
                                                         .expect("Failed to init lz4 encoder")) }) as Box<dyn Write>,
                     &Some(CompressionSpec{method: Gzip, ..}) =>
-                        Box::new(GzEncoder::new(output, Compression::Fast)) as Box<dyn Write>,
+                        Box::new(GzEncoder::new(output, Compression::fast())) as Box<dyn Write>,
                     &None => Box::new(std::io::BufWriter::new(output)) as Box<dyn Write>,
                 };
 

@@ -24,7 +24,7 @@ pub fn load_txt<T: FromStr>(file: &str) -> Vec<T> {
 }
 
 pub fn load_txt_gz<T: FromStr>(file: &str) -> Vec<T> {
-    let gz = GzDecoder::new(File::open(file).unwrap()).unwrap();
+    let gz = GzDecoder::new(File::open(file).unwrap());
     let rdr = BufReader::new(gz);
     let rows = rdr.lines().map(|l| l.ok().and_then(|s| s.parse::<T>().ok()).unwrap()).collect();
     return rows

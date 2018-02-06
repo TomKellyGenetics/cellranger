@@ -8,7 +8,6 @@ use debruijn::dna_string::DnaString;
 use debruijn::{Exts, Dir, Kmer, Mer};
 use debruijn::graph::{DebruijnGraph, Node};
 use debruijn::compression::{SimpleCompress, compress_kmers};
-
 use debruijn::Vmer;
 
 use std::fmt::Debug;
@@ -34,12 +33,13 @@ pub fn build_graph(reads: &Vec<&graph_read::Read>,
     }
 
     let summarizer = filter::CountFilterSet::new(min_kmers);
+
     let mut valid_kmers : Vec<(Kmer1, (Exts, Vec<u32>))> = {
         let (kmer_hashmap, _) = filter::filter_kmers::<Kmer1, _, _, _, _>(&seqs, &Box::new(summarizer), true, false, 4);
         // convert hashmap back to vec
         kmer_hashmap.iter().map(|(k,e,d)| (*k, (*e, d.clone()))).collect()
     };
-
+ 
     println!("Kmers accepted: {}", valid_kmers.len());
 
     // if we have a ton of valid kmers, drop the ones with least coverage
@@ -52,8 +52,10 @@ pub fn build_graph(reads: &Vec<&graph_read::Read>,
     valid_kmers.sort();
     filter::remove_censored_exts(true, &mut valid_kmers);
 
+
     let cmp = SimpleCompress::new(|mut a: Vec<u32>, b: &Vec<u32>| { a.extend(b); a.sort(); a.dedup(); a });
-    let graph = compress_kmers(true, &cmp, &valid_kmers).finish();
+    let mut graph = compress_kmers(true, &cmp, &valid_kmers).finish();
+    graph.fix_exts(None);
 
     println!("# Edges: {}", graph.len());
     IndexedGraph::new(graph)

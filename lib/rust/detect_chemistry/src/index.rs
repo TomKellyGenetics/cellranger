@@ -10,6 +10,7 @@ use fnv::FnvHashSet;
 use bio::io::{fasta};
 use debruijn::{Kmer, Vmer};
 use debruijn::dna_string::DnaString;
+//use itertools::Itertools;
 use pdqsort;
 use bincode;
 use serde::de::DeserializeOwned;

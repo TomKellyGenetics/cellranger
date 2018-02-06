@@ -7,7 +7,8 @@ use std::io::{Read};
 
 use bio::io::fastq;
 
-use debruijn::{Kmer, Vmer};
+use debruijn::{Kmer};
+use debruijn::{Vmer};
 use debruijn::dna_string::DnaString;
 
 use index;

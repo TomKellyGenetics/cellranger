@@ -16,7 +16,7 @@ use std::collections::{HashMap};
 use failure::Error;
 
 use rust_htslib::bam::{self, Read};
-use rust_htslib::bam::record::CigarString; 
+use rust_htslib::bam::record::CigarString;
 
 pub fn concatenate_bams(bam_filenames: &Vec<String>, merged_bam: &String) -> Result<(), Error> {
     let mut concat_header = bam::header::Header::new();
@@ -168,7 +168,7 @@ pub fn read_to_bam_record_opts(read: &graph_read::Read,
             new_header.header.as_bytes()
         };
 
-    rec.set(qname, serde::export::Some(&cigar), &adj_seq, &adj_qual);
+    rec.set(qname, &CigarString(cigar.to_vec()), &adj_seq, &adj_qual);
 
     if set_augmented_tags {
         for (tag, value) in new_header.tags.iter() {

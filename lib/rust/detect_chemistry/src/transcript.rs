@@ -82,7 +82,6 @@ pub fn fetch_transcript<R: Read + Seek>(reader: &mut fasta::IndexedReader<R>,
     for (start, end) in exons {
         let mut exon_seq = Vec::with_capacity((end-start) as usize);
 
-
         let _ = reader.fetch(&transcript.chr, start as u64, end as u64);
         match reader.read(&mut exon_seq) {
             Ok(_) => {},

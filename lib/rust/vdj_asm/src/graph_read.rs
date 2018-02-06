@@ -206,15 +206,8 @@ mod tests {
                 assert_eq!(new_rec2.qual(), rec2.qual());
                 assert_eq!(new_rec2.seq().as_bytes(), rec2.seq().as_bytes());
 
-                assert_eq!(
-                    new_rec1.cigar().iter().cloned().collect::<Vec<_>>(), 
-                    vec![bam::record::Cigar::Equal(read1.len() as u32)]
-                );
-
-                assert_eq!(
-                    new_rec2.cigar().iter().cloned().collect::<Vec<_>>(), 
-                    vec![bam::record::Cigar::Equal(read2.len() as u32)]
-                );
+                assert_eq!(new_rec1.cigar().iter().cloned().collect::<Vec<_>>(), vec![bam::record::Cigar::Equal(read1.len() as u32)]);
+                assert_eq!(new_rec2.cigar().iter().cloned().collect::<Vec<_>>(), vec![bam::record::Cigar::Equal(read2.len() as u32)]);
             }
             
             {

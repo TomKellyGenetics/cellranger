@@ -11,7 +11,6 @@ use rust_htslib::bam::record::Record;
 use serde_json;
 use serde_json::Value;
 use bincode;
-use bincode::Infinite;
 use rand;
 use rand::{Rng, SeedableRng};
 
@@ -369,12 +368,12 @@ impl Metrics {
 
     pub fn write_binary(&self, filename: &String) {
         let mut writer = File::create(filename).unwrap();
-        bincode::serialize_into(&mut writer, self, Infinite).expect("Failed to serialize binary data");
+        bincode::serialize_into(&mut writer, self).expect("Failed to serialize binary data");
     }
 
     pub fn read_binary(filename: &String) -> Self {
         let mut reader = File::open(filename).unwrap();
-        return bincode::deserialize_from(&mut reader, Infinite).unwrap()
+        return bincode::deserialize_from(&mut reader).unwrap()
     }
 }
 
