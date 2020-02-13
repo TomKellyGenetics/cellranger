@@ -235,10 +235,10 @@ fn make_fastq_path(out_path: &Path, out_prefix: &str, chunk_number: usize,
 }
 
 // This wrapper is required because of https://github.com/bozaro/lz4-rs/issues/9
-struct StreamWrapper<W: Write> {
+struct StreamWrapper<W: dyn Write> {
     pub s: Option<lz4::Encoder<W>>,
 }
-impl<W: Write> Write for StreamWrapper<W> {
+impl<W: dyn Write> Write for StreamWrapper<W> {
     fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
         self.s.as_mut().unwrap().write(buffer)
     }
@@ -246,7 +246,7 @@ impl<W: Write> Write for StreamWrapper<W> {
         self.s.as_mut().unwrap().flush()
     }
 }
-impl<W: Write> Drop for StreamWrapper<W> {
+impl<W: dyn Write> Drop for StreamWrapper<W> {
     fn drop(&mut self) {
         match self.s.take() {
             Some(s) => {s.finish();}

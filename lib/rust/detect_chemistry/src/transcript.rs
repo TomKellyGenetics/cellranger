@@ -67,7 +67,7 @@ pub fn parse_gtf<R: BufRead>(reader: R, take_first: bool) -> HashMap<String, Tra
     transcripts
 }
 
-pub fn fetch_transcript<R: Read + Seek>(reader: &mut fasta::IndexedReader<R>,
+pub fn fetch_transcript<R: dyn Read + Seek>(reader: &mut fasta::IndexedReader<R>,
                                         transcript: Transcript) -> Vec<u8> {
     // Get transcript sequence from genome FASTA
     let mut exons = transcript.exons.into_sorted_vec();

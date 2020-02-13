@@ -28,7 +28,7 @@ pub struct FeatureChecker {
 }
 
 impl FeatureChecker {
-    pub fn new<R: Read>(fref_file: R, gene_index_file: R,
+    pub fn new<R: dyn Read>(fref_file: R, gene_index_file: R,
                         fdist_file: R, library_type: &str) -> FeatureChecker {
         let fref = FeatureReference::new(fref_file, gene_index_file);
         let fdist = load_feature_dist(fdist_file, &fref);
@@ -155,7 +155,7 @@ pub struct FeatureReference {
 }
 
 impl FeatureReference {
-    pub fn new<R: Read, R2: Read>(csv_stream: R, gene_index_stream: R2) -> FeatureReference {
+    pub fn new<R: dyn Read, R2: Read>(csv_stream: R, gene_index_stream: R2) -> FeatureReference {
         let reader = BufReader::new(csv_stream);
         let mut csv_reader = csv::Reader::from_reader(reader);
 
@@ -236,7 +236,7 @@ impl FeatureReference {
 
 /// Load a JSON file containing an array of integer counts, one per feature.
 /// Return the proportions, normalized within each feature type.
-fn load_feature_dist<R: Read>(counts_json: R, feat_ref: &FeatureReference) -> Vec<f64> {
+fn load_feature_dist<R: dyn Read>(counts_json: R, feat_ref: &FeatureReference) -> Vec<f64> {
     let reader = BufReader::new(counts_json);
 
     let counts: Vec<i64> = serde_json::from_reader(reader)
