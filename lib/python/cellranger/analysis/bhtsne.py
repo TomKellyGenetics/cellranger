@@ -3,40 +3,43 @@
 # Copyright (c) 2017 10X Genomics, Inc. All rights reserved.
 #
 
-import cellranger.analysis.io as cr_io
-import cellranger.constants as cr_constants
-import cellranger.utils as cr_utils
+import cellranger.analysis.io as analysis_io
+import cellranger.analysis.constants as analysis_constants
+import cellranger.io as cr_io
 
 import collections
 import numpy as np
 import os
 import tsne as tsne_bh
 
-TSNE = collections.namedtuple('TSNE', ['transformed_tsne_matrix'])
+TSNE = collections.namedtuple('TSNE', ['transformed_tsne_matrix',
+                                       'name', # Human readable form
+                                       'key', # Machine queryable form, must be unique
+])
 
-def run_tsne(transformed_pca_matrix, tsne_dims=None, input_pcs=None, perplexity=None, theta=None,
+def run_tsne(transformed_pca_matrix, name='TSNE', key='TSNE', tsne_dims=None, input_pcs=None, perplexity=None, theta=None,
              max_iter=None, stop_lying_iter=None, mom_switch_iter=None, copy_data=False, random_state=None):
 
     if tsne_dims is None:
-        tsne_dims = cr_constants.TSNE_N_COMPONENTS
+        tsne_dims = analysis_constants.TSNE_N_COMPONENTS
 
     if perplexity is None:
-        perplexity = cr_constants.TSNE_DEFAULT_PERPLEXITY
+        perplexity = analysis_constants.TSNE_DEFAULT_PERPLEXITY
 
     if theta is None:
-        theta = cr_constants.TSNE_THETA
+        theta = analysis_constants.TSNE_THETA
 
     if random_state is None:
-        random_state = cr_constants.RANDOM_STATE
+        random_state = analysis_constants.RANDOM_STATE
 
     if max_iter is None:
-        max_iter = cr_constants.TSNE_MAX_ITER
+        max_iter = analysis_constants.TSNE_MAX_ITER
 
     if stop_lying_iter is None:
-        stop_lying_iter = cr_constants.TSNE_STOP_LYING_ITER
+        stop_lying_iter = analysis_constants.TSNE_STOP_LYING_ITER
 
     if mom_switch_iter is None:
-        mom_switch_iter = cr_constants.TSNE_MOM_SWITCH_ITER
+        mom_switch_iter = analysis_constants.TSNE_MOM_SWITCH_ITER
 
     if input_pcs is not None:
         transformed_pca_matrix = transformed_pca_matrix[:, :input_pcs]
@@ -55,18 +58,23 @@ def run_tsne(transformed_pca_matrix, tsne_dims=None, input_pcs=None, perplexity=
                                              copy_data = copy_data,
                                              random_state = np.random.RandomState(random_state))
 
-    return TSNE(transformed_tsne_matrix)
+    return TSNE(transformed_tsne_matrix, name=name, key=key)
 
-def save_tsne_csv(tsne_map, matrix, base_dir):
-    for n_tsne_components, tsne in tsne_map.iteritems():
-        n_tsne_components_dir = os.path.join(base_dir, '%d_components' % n_tsne_components)
-        cr_utils.makedirs(n_tsne_components_dir, allow_existing=True)
+def save_tsne_csv(tsne, matrix, base_dir):
+    """Save a TSNE object to CSV"""
+    # Preserve backward compatibility with pre-3.0 CSV files
+    #   where the CSV directory was named "2_components" and the HDF5 dataset was named "_2"
+    key = tsne.key + '_components'
 
-        matrix_fn = os.path.join(n_tsne_components_dir, 'projection.csv')
-        matrix_header = ['Barcode'] + ['TSNE-%d' % (i+1) for i in xrange(n_tsne_components)]
-        cr_io.save_matrix_csv(matrix_fn, tsne.transformed_tsne_matrix, matrix_header, matrix.bcs)
+    tsne_dir = os.path.join(base_dir, key)
+    cr_io.makedirs(tsne_dir, allow_existing=True)
 
-def save_tsne_h5(tsne_map, f):
-    group = f.create_group(f.root, cr_constants.ANALYSIS_H5_TSNE_GROUP)
-    for n_tsne_components, tsne in tsne_map.iteritems():
-        cr_io.save_h5(f, group, str(n_tsne_components), tsne)
+    matrix_fn = os.path.join(tsne_dir, 'projection.csv')
+    n_tsne_components = tsne.transformed_tsne_matrix.shape[1]
+    matrix_header = ['Barcode'] + ['TSNE-%d' % (i+1) for i in xrange(n_tsne_components)]
+    analysis_io.save_matrix_csv(matrix_fn, tsne.transformed_tsne_matrix, matrix_header, matrix.bcs)
+
+def save_tsne_h5(tsne, f):
+    """Save a TSNE object to HDF5"""
+    group = f.create_group(f.root, analysis_constants.ANALYSIS_H5_TSNE_GROUP)
+    analysis_io.save_h5(f, group, tsne.key, tsne)

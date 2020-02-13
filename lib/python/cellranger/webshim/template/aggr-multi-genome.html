@@ -8,11 +8,30 @@
     [[ utils.single_hero_card(data.tables[0].rows[0]) ]]
     [[ utils.single_hero_card(data.tables[0].rows[1]) ]]
     <!-- Sequencing Card -->
-    [[ utils.summary_card(data.tables[1]) ]]
+    {% if data.tables|selectattr("name", "equalto", "Sequencing")|list|length > 0 %}
+    [[ utils.summary_card(data.tables | selectattr("name", "equalto", "Sequencing") | first) ]]
+    {% endif %}
     <!-- GEMs Card -->
-    [[ utils.summary_card(data.tables[3]) ]]
+    {% if data.tables|selectattr("name", "equalto", "GEM Partitions")|list|length > 0 %}
+    [[ utils.summary_card(data.tables | selectattr("name", "equalto", "GEM Partitions") | first) ]]
+    {% endif %}
      <!-- Aggregation Card -->
-    [[ utils.summary_card(data.tables[4]) ]]
+    {% if data.tables|selectattr("name", "equalto", "Aggregation")|list|length > 0 %}
+    [[ utils.summary_card(data.tables | selectattr("name", "equalto", "Aggregation") | first) ]]
+    {% endif %}
+    {% if data.tables|selectattr("name", "equalto", "CRISPR Aggregation")|list|length > 0 %}
+    [[ utils.summary_card(data.tables | selectattr("name", "equalto", "CRISPR Aggregation") | first) ]]
+    {% endif %}
+    {% if data.tables|selectattr("name", "equalto", "Antibody Aggregation")|list|length > 0 %}
+    [[ utils.summary_card(data.tables | selectattr("name", "equalto", "Antibody Aggregation") | first) ]]
+    {% endif %}
+    {% if data.tables|selectattr("name", "equalto", "Feature Aggregation")|list|length > 0 %}
+    [[ utils.summary_card(data.tables | selectattr("name", "equalto", "Feature Aggregation") | first) ]]
+    {% endif %}
+    <!-- Chemistry Batch Correction Card -->
+    {% if data.tables|selectattr("name", "equalto", "Chemistry Batch Correction")|list|length > 0 %}
+    [[ utils.summary_card(data.tables | selectattr("name", "equalto", "Chemistry Batch Correction") | first) ]]
+    {% endif %}
  </div>
   <div class="summary_card_gutter">&nbsp;</div>
   <!-- Right Summary Column -->
@@ -31,6 +50,14 @@
     {% include 'charts/barnyard-counts.html' %}
   </div>
   <div class="chart_card_gutter chart_card_gutter_single">&nbsp;</div>
+  <div class="chart_card_column">
+    {% include 'charts/tsne-counts.html' %}
+  </div>
+  <div class="chart_card_gutter">&nbsp;</div>
+  <div class="chart_card_column">
+    {% include 'charts/tsne-clustering.html' %}
+  </div>
+  {% include 'charts/differential-expression.html' %}
   <div class="chart_card_column">
     {% include 'charts/sequencing-saturation.html' %}
   </div>

@@ -5,7 +5,7 @@
 import os
 import resource
 import tenkit.bam as tk_bam
-import cellranger.utils as cr_utils
+import cellranger.io as cr_io
 
 __MRO__ = """
 stage SORT_BY_POS(
@@ -25,10 +25,11 @@ def split(args):
     for chunk_input in args.inputs:
         chunks.append({
             'chunk_input': chunk_input,
+            '__mem_gb': 2,
         })
     join = {
         '__threads': args.num_threads,
-        '__mem_gb': args.mem_gb,
+        '__mem_gb': 4,
     }
     return {'chunks': chunks, 'join': join}
 
@@ -54,7 +55,7 @@ def merge(input_bams, output_bam, threads=1):
             else:
                 new_bams.append(input_bams[i])
         input_bams = new_bams
-    cr_utils.move(input_bams[0], output_bam)
+    cr_io.move(input_bams[0], output_bam)
 
 def join(args, outs, chunk_defs, chunk_outs):
     outs.coerce_strings()

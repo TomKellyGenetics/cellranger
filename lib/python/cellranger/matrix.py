@@ -1,61 +1,385 @@
 #!/usr/bin/env python
 #
-# Copyright (c) 2015 10X Genomics, Inc. All rights reserved.
+# Copyright (c) 2018 10X Genomics, Inc. All rights reserved.
 #
+from collections import OrderedDict
+import copy
 import h5py as h5
 import itertools
 import json
 import numpy as np
-import operator
+import scipy.io as sp_io
 import os
 import pandas as pd
+pd.set_option("compute.use_numexpr", False)
 import shutil
 import tables
-import scipy.io as sp_io
 import scipy.sparse as sp_sparse
 import tenkit.safe_json as tk_safe_json
-import tenkit.stats as tk_stats
-import cellranger.constants as cr_constants
-import cellranger.stats as cr_stats
+import cellranger.h5_constants as h5_constants
+import cellranger.library_constants as lib_constants
+from cellranger.feature_ref import FeatureReference, FeatureDef
 import cellranger.utils as cr_utils
+import cellranger.io as cr_io
+import cellranger.sparse as cr_sparse
+import cellranger.bisect as cr_bisect
 
-MATRIX_H5_FILETYPE = 'matrix'
+HDF5_COMPRESSION = 'gzip'
+# Number of elements per chunk. Here, 1 MiB / (12 bytes)
+HDF5_CHUNK_SIZE = 80000
 
-class GeneBCMatrix:
-    def __init__(self, genes, bcs, dtype='int32'):
-        self.genes = list(genes)
-        self.genes_dim = len(self.genes)
-        self.gene_ids_map = {gene.id:i for i, gene in enumerate(self.genes)}
+DEFAULT_DATA_DTYPE = 'int32'
 
-        self.bcs = list(bcs)
-        self.bcs_dim = len(self.bcs)
-        self.bcs_map = {bc:i for i, bc in enumerate(self.bcs)}
 
-        self.dtype = dtype
-        self.m = sp_sparse.lil_matrix((self.genes_dim, self.bcs_dim), dtype=dtype)
+# some helper functions from stats
+def sum_sparse_matrix(matrix, axis=0):
+    '''Sum a sparse matrix along an axis.'''
+    return np.squeeze(np.asarray(matrix.sum(axis=axis)))
 
-    def gene_id_to_int(self, gene_id):
-        if gene_id not in self.gene_ids_map:
-            raise KeyError("Specified gene not found in matrix: %s" % gene_id)
-        return self.gene_ids_map[gene_id]
+def top_n(array, n):
+    '''Retrieve the N largest elements and their positions in a numpy ndarray.
+    Args:
+       array (numpy.ndarray): Array
+       n (int): Number of elements
 
-    def gene_ids_to_ints(self, gene_ids):
-        return sorted([self.gene_id_to_int(gene_id) for gene_id in gene_ids])
+    Returns:
+       list of tuple of (int, x): Tuples are (original index, value).
+    '''
+    indices = np.argpartition(array, -n)[-n:]
+    indices = indices[np.argsort(array[indices])]
+    return zip(indices, array[indices])
 
-    def gene_id_to_name(self, gene_id):
-        i = self.gene_id_to_int(gene_id)
-        return self.int_to_gene_name(i)
+MATRIX_H5_FILETYPE = u'matrix'
+MATRIX_H5_VERSION_KEY = u'version'
+MATRIX_H5_VERSION = 2
 
-    def int_to_gene_id(self, i):
-        return self.genes[i].id
+# used to distinguish from user-defined attrs introduced in aggr
+MATRIX_H5_BUILTIN_ATTRS = ([h5_constants.H5_FILETYPE_KEY, MATRIX_H5_VERSION_KEY] +
+                           h5_constants.H5_METADATA_ATTRS)
 
-    def int_to_gene_name(self, i):
-        return self.genes[i].name
+class NullAxisMatrixError(Exception):
+    pass
+
+class CountMatrixView(object):
+    """Supports summing a sliced CountMatrix w/o copying the whole thing"""
+    def __init__(self, matrix, feature_indices=None, bc_indices=None):
+        self.feature_mask = np.ones(matrix.features_dim, dtype='bool')
+        self.bc_mask = np.ones(matrix.bcs_dim, dtype='bool')
+        self.matrix = matrix
+
+        if feature_indices is not None:
+            self.feature_mask.fill(False)
+            self.feature_mask[np.asarray(feature_indices)] = True
+        if bc_indices is not None:
+            self.bc_mask.fill(False)
+            self.bc_mask[np.asarray(bc_indices)] = True
+
+        self._update_feature_ref()
+
+    @property
+    def bcs_dim(self): return np.count_nonzero(self.bc_mask)
+
+    @property
+    def features_dim(self): return np.count_nonzero(self.feature_mask)
+
+    def _copy(self):
+        """Return a copy of this view"""
+        view = CountMatrixView(self.matrix)
+        view.bc_mask = np.copy(self.bc_mask)
+        view.feature_mask = np.copy(self.feature_mask)
+        view._update_feature_ref()
+        return view
+
+    def view(self):
+        """Return a copy of this view"""
+        return self._copy()
+
+    def sum(self, axis=None):
+        """Sum across an axis."""
+        return cr_sparse.sum_masked(self.matrix.m, self.feature_mask, self.bc_mask, axis=axis)
+
+    def count_ge(self, axis, threshold):
+        """Count number of elements >= X over an axis"""
+        return cr_sparse.count_ge_masked(self.matrix.m, self.feature_mask, self.bc_mask, threshold, axis)
+
+    def select_barcodes(self, indices):
+        """Select a subset of barcodes (by index in the original matrix) and return the resulting view"""
+        view = self._copy()
+        mask = np.bincount(indices, minlength=len(view.bc_mask)).astype('bool')
+        mask[mask > 1] = 1
+        view.bc_mask &= mask
+        return view
+
+    def select_barcodes_by_seq(self, barcode_seqs):
+        return self.select_barcodes([self.matrix.bc_to_int(bc) for bc in barcode_seqs])
+
+    def select_barcodes_by_gem_group(self, gem_group):
+        return self.select_barcodes_by_seq(
+            [bc for bc in self.matrix.bcs if gem_group == cr_utils.split_barcode_seq(bc)[1]])
+
+    def _update_feature_ref(self):
+        """Make the feature reference consistent with the feature mask"""
+        indices = np.flatnonzero(self.feature_mask)
+        self.feature_ref = FeatureReference(feature_defs=[self.matrix.feature_ref.feature_defs[i] for i in indices],
+                                            all_tag_keys=self.matrix.feature_ref.all_tag_keys)
+
+    def select_features(self, indices):
+        """Select a subset of features and return the resulting view."""
+        view = self._copy()
+        mask = np.bincount(indices, minlength=len(view.feature_mask)).astype('bool')
+        mask[mask > 1] = 1
+        view.feature_mask &= mask
+        view._update_feature_ref()
+        return view
+
+    def select_features_by_genome(self, genome):
+        """Select the subset of gene-expression features for genes in a specific genome"""
+        indices = []
+        for feature in self.matrix.feature_ref.feature_defs:
+            if feature.feature_type == lib_constants.DEFAULT_LIBRARY_TYPE:
+                if feature.tags['genome'] == genome:
+                    indices.append(feature.index)
+        return self.select_features(indices)
+
+    def select_features_by_type(self, feature_type):
+        """Select the subset of features with a particular feature type (e.g. "Gene Expression")"""
+        indices = []
+        for feature in self.matrix.feature_ref.feature_defs:
+            if feature.feature_type == feature_type:
+                indices.append(feature.index)
+        return self.select_features(indices)
+
+    def select_features_by_ids(self, feature_ids):
+        return self.matrix.select_features(self.matrix.feature_ids_to_ints(feature_ids))
+
+    def get_genomes(self):
+        return CountMatrix._get_genomes_from_feature_ref(self.feature_ref)
+
+    def bcs_to_ints(self, bcs):
+        # Only works when we haven't masked barcodes.
+        if np.count_nonzero(self.bc_mask) != self.matrix.bcs_dim:
+            raise NotImplementedError('Calling bcs_to_ints on a barcode-sliced matrix view is unimplemented')
+        return self.matrix.bcs_to_ints(bcs)
+
+    def ints_to_bcs(self, bc_ints):
+        if bc_ints is None or len(bc_ints) == 0:
+            return []
+        sliced_bc_ints = np.flatnonzero(self.bc_mask)
+        orig_bc_ints = sliced_bc_ints[np.asarray(bc_ints)]
+        return [self.matrix.bcs[i] for i in orig_bc_ints]
+
+    def int_to_feature_id(self, i):
+        return self.feature_ref.feature_defs[i].id
+
+    def get_shape(self):
+        """Return the shape of the sliced matrix"""
+        return (np.count_nonzero(self.feature_mask), np.count_nonzero(self.bc_mask))
+
+    def get_num_nonzero(self):
+        """Return the number of nonzero entries in the sliced matrix"""
+        return self.count_ge(axis=None, threshold=1)
+
+    def get_counts_per_bc(self):
+        return self.sum(axis=0)
+
+class CountMatrix(object):
+    def __init__(self, feature_ref, bcs, matrix):
+        # Features (genes, CRISPR gRNAs, antibody barcodes, etc.)
+        self.feature_ref = feature_ref
+        self.features_dim = len(feature_ref.feature_defs)
+        self.feature_ids_map = { f.id: f.index for f in feature_ref.feature_defs }
+
+        # Cell barcodes
+        bcs = np.array(bcs, dtype='S', copy=False)
+        bcs.flags.writeable = False
+        self.bcs = bcs
+        self.bcs_dim, = self.bcs.shape
+        bcs_idx = np.argsort(self.bcs).astype(np.int32)
+        bcs_idx.flags.writeable = False
+        self.bcs_idx = bcs_idx
+
+        self.m = matrix
+
+    def get_shape(self):
+        """Return the shape of the sliced matrix"""
+        return self.m.shape
+
+    def get_num_nonzero(self):
+        """Return the number of nonzero entries in the sliced matrix"""
+        return self.m.nnz
+
+    def view(self):
+        """Return a view on this matrix"""
+        return CountMatrixView(self)
+
+    @classmethod
+    def empty(cls, feature_ref, bcs, dtype=DEFAULT_DATA_DTYPE):
+        '''Create an empty matrix.'''
+        matrix = sp_sparse.lil_matrix((len(feature_ref.feature_defs), len(bcs)), dtype=dtype)
+        return cls(feature_ref=feature_ref, bcs=bcs, matrix=matrix)
+
+    @classmethod
+    def from_legacy_v1_h5(cls, h5_file):
+        """Create a CountMatrix from a legacy h5py.File (format version 1)"""
+
+        genome_arrays = []
+        gene_id_arrays = []
+        gene_name_arrays = []
+        bc_idx_arrays = []
+        feat_idx_arrays = []
+        data_arrays = []
+
+        # Map barcode string to column index in new matrix
+        barcode_map = OrderedDict()
+
+        # Construct a genome-concatenated matrix and FeatureReference
+        for genome_idx, genome in enumerate(h5_file.keys()):
+            g = h5_file[genome]
+
+            n_genes = sum(len(x) for x in gene_id_arrays)
+
+            # Offset the row (gene) indices by the number of genes seen so far
+            feat_idx_arrays.append(g['indices'][:] + n_genes)
+
+            # Offset the col (barcode) indices by the number of nonzero elements seen so far
+
+            # Map barcode (column) indices to a single unique barcode space
+            barcodes = g['barcodes'][:]
+            for bc in barcodes:
+                if bc not in barcode_map:
+                    barcode_map[bc] = len(barcode_map)
+
+            remapped_col_inds = np.fromiter((barcode_map[bc] for bc in barcodes),
+                                            count=len(barcodes),
+                                            dtype='uint64',)
+
+            indptr = g['indptr'][:]
+            assert len(indptr) == 1 + len(remapped_col_inds)
+
+            if genome_idx == 0:
+                # For the first set of barcodes encountered, there should
+                # be no change in their new indices.
+                assert np.array_equal(remapped_col_inds, np.arange(len(indptr) - 1))
+
+            # Convert from CSC to COO by expanding the indptr array out
+
+
+            nz_elems_per_bc = np.diff(indptr)
+            assert len(nz_elems_per_bc) == len(g['barcodes'])
+
+            bc_idx = np.repeat(remapped_col_inds, nz_elems_per_bc)
+            assert len(bc_idx) == len(g['indices'])
+            assert len(bc_idx) == len(g['data'])
+
+            bc_idx_arrays.append(bc_idx)
+            data_arrays.append(g['data'][:])
+
+            gene_id_arrays.append(g['genes'][:])
+            gene_name_arrays.append(g['gene_names'][:])
+            genome_arrays.append(np.repeat(genome, len(g['genes'])))
+
+        genomes = np.concatenate(genome_arrays)
+        gene_ids = np.concatenate(gene_id_arrays)
+        gene_names = np.concatenate(gene_name_arrays)
+
+        # Construct FeatureReference
+        feature_defs = []
+        for (gene_id, gene_name, genome) in itertools.izip(gene_ids, gene_names, genomes):
+            feature_defs.append(FeatureDef(index=len(feature_defs),
+                                           id=gene_id,
+                                           name=gene_name,
+                                           feature_type=lib_constants.GENE_EXPRESSION_LIBRARY_TYPE,
+                                           tags={'genome': genome}))
+        feature_ref = FeatureReference(feature_defs, ['genome'])
+
+        i = np.concatenate(feat_idx_arrays)
+        j = np.concatenate(bc_idx_arrays)
+        data = np.concatenate(data_arrays)
+
+        assert(type(barcode_map) == OrderedDict)
+        barcodes = barcode_map.keys()
+
+        matrix = sp_sparse.csc_matrix((data, (i, j)), shape=(len(gene_ids), len(barcodes)))
+
+        return CountMatrix(feature_ref, barcodes, matrix)
+
+
+    @staticmethod
+    def from_legacy_mtx(genome_dir):
+        barcodes_tsv = os.path.join(genome_dir, "barcodes.tsv")
+        genes_tsv = os.path.join(genome_dir, "genes.tsv")
+        matrix_mtx = os.path.join(genome_dir, "matrix.mtx")
+        for filepath in [barcodes_tsv, genes_tsv, matrix_mtx]:
+            if not os.path.exists(filepath):
+                raise IOError("Required file not found: %s" % filepath)
+        barcodes = pd.read_csv(barcodes_tsv, delimiter='\t', header=None, usecols=[0]).values.squeeze()
+        genes = pd.read_csv(genes_tsv, delimiter='\t', header=None, usecols=[0]).values.squeeze()
+        feature_defs = [FeatureDef(idx, gene_id, None, "Gene Expression", []) for (idx, gene_id) in enumerate(genes)]
+        feature_ref = FeatureReference(feature_defs, [])
+
+        matrix = sp_io.mmread(matrix_mtx)
+        mat = CountMatrix(feature_ref, barcodes, matrix)
+        return mat
+
+    @staticmethod
+    def from_v3_mtx(genome_dir):
+        barcodes_tsv = os.path.join(genome_dir, "barcodes.tsv.gz")
+        features_tsv = os.path.join(genome_dir, "features.tsv.gz")
+        matrix_mtx = os.path.join(genome_dir, "matrix.mtx.gz")
+        for filepath in [barcodes_tsv, features_tsv, matrix_mtx]:
+            if not os.path.exists(filepath):
+                raise IOError("Required file not found: %s" % filepath)
+        barcodes = pd.read_csv(barcodes_tsv, delimiter='\t', header=None, usecols=[0]).values.squeeze()
+        features = pd.read_csv(features_tsv, delimiter='\t', header=None)
+
+        feature_defs = []
+        for (idx, (_, r)) in enumerate(features.iterrows()):
+            fd = FeatureDef(idx, r[0], r[1], r[2], [])
+            feature_defs.append(fd)
+
+        feature_ref = FeatureReference(feature_defs, [])
+
+        matrix = sp_io.mmread(matrix_mtx)
+        mat = CountMatrix(feature_ref, barcodes, matrix)
+        return mat
+
+
+    @staticmethod
+    def load_mtx(mtx_dir):
+        legacy_fn = os.path.join(mtx_dir, "genes.tsv")
+        v3_fn = os.path.join(mtx_dir, "features.tsv.gz")
+
+        if os.path.exists(legacy_fn):
+            return CountMatrix.from_legacy_mtx(mtx_dir)
+
+        if os.path.exists(v3_fn):
+            return CountMatrix.from_v3_mtx(mtx_dir)
+
+        raise IOError("Not a valid path to a feature-barcode mtx directory: '%s'" % str(mtx_dir))
+
+    def feature_id_to_int(self, feature_id):
+        if feature_id not in self.feature_ids_map:
+            raise KeyError("Specified feature ID not found in matrix: %s" % feature_id)
+        return self.feature_ids_map[feature_id]
+
+    def feature_ids_to_ints(self, feature_ids):
+        return sorted([self.feature_id_to_int(fid) for fid in feature_ids])
+
+    def feature_id_to_name(self, feature_id):
+        idx = self.feature_id_to_int(feature_id)
+        return self.feature_ref.feature_defs[idx].name
+
+    def int_to_feature_id(self, i):
+        return self.feature_ref.feature_defs[i].id
+
+    def int_to_feature_name(self, i):
+        return self.feature_ref.feature_defs[i].name
 
     def bc_to_int(self, bc):
-        if bc not in self.bcs_map:
+        j = cr_bisect.bisect_left(self.bcs_idx, bc, self.bcs)
+        if j >= self.bcs_dim or self.bcs[j] != bc:
             raise KeyError("Specified barcode not found in matrix: %s" % bc)
-        return self.bcs_map[bc]
+        return j
 
     def bcs_to_ints(self, bcs):
         return sorted([self.bc_to_int(bc) for bc in bcs])
@@ -66,253 +390,201 @@ class GeneBCMatrix:
     def ints_to_bcs(self, jj):
         return [self.int_to_bc(j) for j in jj]
 
-    def add(self, gene_id, bc, value=1):
-        i, j = self.gene_id_to_int(gene_id), self.bc_to_int(bc)
+    def add(self, feature_id, bc, value=1):
+        '''Add a count.'''
+        i, j = self.feature_id_to_int(feature_id), self.bc_to_int(bc)
         self.m[i,j] += value
 
-    def get(self, gene_id, bc):
-        i, j = self.gene_id_to_int(gene_id), self.bc_to_int(bc)
+    def get(self, feature_id, bc):
+        i, j = self.feature_id_to_int(feature_id), self.bc_to_int(bc)
         return self.m[i,j]
 
-    def get_nonzero(self):
-        i_array, j_array = self.m.nonzero()
-        return [(self.genes[i], self.bcs[j], self.m[i, j])
-                 for i, j in itertools.izip(i_array, j_array)]
-
-    def merge(self, group):
-        data = group.data.read()
-        indices = group.indices.read()
-        indptr = group.indptr.read()
-        shape = group.shape.read()
-
-        self.m += sp_sparse.csc_matrix((data, indices, indptr), shape=shape).tocoo()
+    def merge(self, other):
+        '''Merge this matrix with another CountMatrix'''
+        assert self.features_dim == other.features_dim
+        self.m += other.m
 
     def save_dense_csv(self, filename):
-        dense_gbm = pd.DataFrame(self.m.toarray(), index=[gene.id for gene in self.genes], columns=self.bcs)
-        dense_gbm.to_csv(filename, index=True, header=True)
+        '''Save this matrix to a dense CSV file.'''
+        dense_cm = pd.DataFrame(self.m.toarray(),
+                                index=[f.id for f in self.feature_ref.feature_defs],
+                                columns=self.bcs)
+        dense_cm.to_csv(filename, index=True, header=True)
 
-    def _save_h5(self, f, group, attr, arr):
-        atom = tables.Atom.from_dtype(arr.dtype)
-        if arr.size > 0:
-            ds = f.create_carray(group, attr, atom, arr.shape)
-        else:
-            ds = f.create_earray(group, attr, atom, arr.shape)
-        ds[:] = arr
+    def save_h5_file(self, filename, extra_attrs={}):
+        '''Save this matrix to an HDF5 file.'''
+        with h5.File(filename, 'w') as f:
+            f.attrs[h5_constants.H5_FILETYPE_KEY] = MATRIX_H5_FILETYPE
+            f.attrs[MATRIX_H5_VERSION_KEY] = MATRIX_H5_VERSION
 
-    def save_h5(self, f, group):
-        self._save_h5(f, group, cr_constants.H5_GENE_IDS_ATTR, np.array([gene.id for gene in self.genes]))
-        self._save_h5(f, group, cr_constants.H5_GENE_NAMES_ATTR, np.array([gene.name for gene in self.genes]))
-        self._save_h5(f, group, cr_constants.H5_BCS_ATTR, np.array(self.bcs))
+            # Set optional top-level attributes
+            for (k,v) in extra_attrs.iteritems():
+                cr_io.set_hdf5_attr(f, k, v)
 
-        for attr, dtype in cr_constants.H5_MATRIX_ATTRS.iteritems():
+            group = f.create_group('matrix')
+            self.save_h5_group(group)
+
+
+    def save_h5_group(self, group):
+        '''Save this matrix to an HDF5 (h5py) group.'''
+        self.tocsc()
+
+        # Save the feature reference
+        feature_ref_group = group.create_group(h5_constants.H5_FEATURE_REF_ATTR)
+        self.feature_ref.to_hdf5(feature_ref_group)
+
+        # Store barcode sequences as array of ASCII strings
+        cr_io.create_hdf5_string_dataset(group, h5_constants.H5_BCS_ATTR, self.bcs)
+
+        for attr, dtype in h5_constants.H5_MATRIX_ATTRS.iteritems():
             arr = np.array(getattr(self.m, attr), dtype=dtype)
-            self._save_h5(f, group, attr, arr)
-
-    @staticmethod
-    def preprocess_matrix(matrix, num_bcs=None, use_bcs=None, use_genes=None, force_cells=None):
-        if force_cells is not None:
-            bc_counts = matrix.get_reads_per_bc()
-            bc_indices, _, _ = cr_stats.filter_cellular_barcodes_fixed_cutoff(bc_counts, force_cells)
-            matrix = matrix.select_barcodes(bc_indices)
-        elif use_bcs is not None:
-            bc_seqs = cr_utils.load_csv_rownames(use_bcs)
-            bc_indices = matrix.bcs_to_ints(bc_seqs)
-            matrix = matrix.select_barcodes(bc_indices)
-        elif num_bcs is not None and num_bcs < matrix.bcs_dim:
-            bc_indices = np.sort(np.random.choice(np.arange(matrix.bcs_dim), size=num_bcs, replace=False))
-            matrix = matrix.select_barcodes(bc_indices)
-
-        if use_genes is not None:
-            gene_ids = cr_utils.load_csv_rownames(use_genes)
-            gene_indices = matrix.gene_ids_to_ints(gene_ids)
-            matrix = matrix.select_genes(gene_indices)
-
-        matrix, _, _ = matrix.select_nonzero_axes()
-        return matrix
+            group.create_dataset(attr, data=arr,
+                                 chunks=(HDF5_CHUNK_SIZE,),
+                                 maxshape=(None,),
+                                 compression=HDF5_COMPRESSION,
+                                 shuffle=True)
 
     @staticmethod
     def load_dims(group):
-        '''Load the shape of the matrix, as well as the number of nonzero entries.'''
-        (genes, bcs) = getattr(group, cr_constants.H5_MATRIX_SHAPE_ATTR).read()
-        entries = getattr(group, cr_constants.H5_MATRIX_DATA_ATTR).nrows
-        return (genes, bcs, entries)
+        '''Load the matrix shape from an HDF5 group'''
+        (rows, cols) = group[h5_constants.H5_MATRIX_SHAPE_ATTR][:]
+        entries = len(group[h5_constants.H5_MATRIX_DATA_ATTR])
+        return (rows, cols, entries)
 
     @staticmethod
-    def get_mem_gb_from_matrix_dim(nonzero_entries):
+    def load_dims_from_h5(filename):
+        '''Load the matrix shape from an HDF5 file'''
+        h5_version = CountMatrix.get_format_version_from_h5(filename)
+        if h5_version == 1:
+            return CountMatrix._load_dims_from_legacy_v1_h5(filename)
+        else:
+            with h5.File(filename, 'r') as f:
+                return CountMatrix.load_dims(f['matrix'])
+
+    @staticmethod
+    def _load_dims_from_legacy_v1_h5(filename):
+        '''Load the matrix shape from a legacy h5py.File (format version 1)'''
+        with h5.File(filename, 'r') as f:
+            # legacy format
+            genomes = f.keys()
+            num_nonzero_entries = 0
+            num_gene_ids = 0
+            barcodes = set()
+            for genome in genomes:
+                g = f[genome]
+                num_nonzero_entries += len(g['data'])
+                num_gene_ids += len(g['genes'])
+                barcodes.update(g['barcodes'])
+            return (num_gene_ids, len(barcodes), num_nonzero_entries)
+
+    @staticmethod
+    def get_mem_gb_from_matrix_dim(num_barcodes, nonzero_entries):
         ''' Estimate memory usage of loading a matrix. '''
-        matrix_mem_gb = round(np.ceil(1.0 * nonzero_entries / cr_constants.NUM_MATRIX_ENTRIES_PER_MEM_GB))
-        return cr_constants.MATRIX_MEM_GB_MULTIPLIER * max(cr_constants.MIN_MEM_GB, matrix_mem_gb)
+        matrix_mem_gb = float(nonzero_entries) / h5_constants.NUM_MATRIX_ENTRIES_PER_MEM_GB
+        # We store a list and a dict of the whitelist. Based on empirical obs.
+        matrix_mem_gb += float(num_barcodes) / h5_constants.NUM_MATRIX_BARCODES_PER_MEM_GB
 
-    @staticmethod
-    def get_mem_gb_from_matrix_h5(matrix_h5):
-        matrix_dims = GeneBCMatrices.load_dims_from_h5(matrix_h5)
-        (genes_dim, bcs_dim, nonzero_entries) = matrix_dims.values()[0]
-        return GeneBCMatrix.get_mem_gb_from_matrix_dim(nonzero_entries)
+        return h5_constants.MATRIX_MEM_GB_MULTIPLIER * round(np.ceil(matrix_mem_gb))
 
     @staticmethod
     def get_mem_gb_from_group(group):
-        _, _, nonzero_entries = GeneBCMatrix.load_dims(group)
-        return GeneBCMatrix.get_mem_gb_from_matrix_dim(nonzero_entries)
+        '''Estimate memory usage from an HDF5 group.'''
+        _, num_bcs, nonzero_entries = CountMatrix.load_dims(group)
+        return CountMatrix.get_mem_gb_from_matrix_dim(num_bcs, nonzero_entries)
 
     @staticmethod
-    def load_mtx(genome_dir):
-        barcodes_tsv = os.path.join(genome_dir, "barcodes.tsv")
-        genes_tsv = os.path.join(genome_dir, "genes.tsv")
-        matrix_mtx = os.path.join(genome_dir, "matrix.mtx")
-        for filepath in [barcodes_tsv, genes_tsv, matrix_mtx]:
-            if not os.path.exists(filepath):
-                raise IOError("Required file not found: %s" % filepath)
-        barcodes = pd.read_csv(barcodes_tsv, delimiter='\t', header=None, usecols=[0]).values.squeeze()
-        genes = pd.read_csv(genes_tsv, delimiter='\t', header=None, usecols=[0]).values.squeeze()
-        genes = [cr_constants.Gene(gene_id, None, None, None, None) for gene_id in genes]
-        matrix = sp_io.mmread(matrix_mtx)
-        gbm = GeneBCMatrix(genes, barcodes)
-        gbm.m = matrix
-        return gbm
-
-    @staticmethod
-    def load(group):
-        gene_ids = list(getattr(group, cr_constants.H5_GENE_IDS_ATTR).read())
-
-        if hasattr(group, cr_constants.H5_GENE_NAMES_ATTR):
-            gene_names = list(getattr(group, cr_constants.H5_GENE_NAMES_ATTR).read())
+    def get_mem_gb_crconverter_estimate_from_h5(filename):
+        '''Estimate the amount of memory needed for the crconverter program to process a GEX matrix
+        see the commit message for a full explanation of this process'''
+        h5_version = CountMatrix.get_format_version_from_h5(filename)
+        if h5_version == 1:
+            '''Estimate memory usage from a legacy h5py.File (format version 1)'''
+            _, _, nonzero_entries = CountMatrix._load_dims_from_legacy_v1_h5(filename)
         else:
-            gene_names = gene_ids
+            with h5.File(filename, 'r') as f:
+                _, _, nonzero_entries = CountMatrix.load_dims(f['matrix'])
+        return CountMatrix._get_mem_gb_crconverter_estimate_from_nnz(nonzero_entries)
 
-        assert len(gene_ids) == len(gene_names)
-        genes = [cr_constants.Gene(id, name, None, None, None) for id, name in itertools.izip(gene_ids, gene_names)]
-        bcs = list(getattr(group, cr_constants.H5_BCS_ATTR).read())
-        matrix = GeneBCMatrix(genes, bcs)
+    @staticmethod
+    def _get_mem_gb_crconverter_estimate_from_nnz(nnz):
+        # Empirically determined baseline + ~85 bytes per nnz
+        estimate = 1.691 + 8.537e-8 * nnz
+        # Arbitrary safety factor
+        estimate *= 1.5
+        return np.ceil(estimate)
 
-        shape = getattr(group, cr_constants.H5_MATRIX_SHAPE_ATTR).read()
-        data = getattr(group, cr_constants.H5_MATRIX_DATA_ATTR).read()
-        indices = getattr(group, cr_constants.H5_MATRIX_INDICES_ATTR).read()
-        indptr = getattr(group, cr_constants.H5_MATRIX_INDPTR_ATTR).read()
+    @staticmethod
+    def get_mem_gb_from_matrix_h5(filename):
+        '''Estimate memory usage from an HDF5 file.'''
+        h5_version = CountMatrix.get_format_version_from_h5(filename)
+        if h5_version == 1:
+            return CountMatrix._get_mem_gb_from_legacy_v1_h5(filename)
+        else:
+            with h5.File(filename, 'r') as f:
+                return CountMatrix.get_mem_gb_from_group(f['matrix'])
 
-        # quick check to make sure indptr increases monotonically (to catch overflow bugs)
+    @staticmethod
+    def _get_mem_gb_from_legacy_v1_h5(filename):
+        '''Estimate memory usage from a legacy h5py.File (format version 1)'''
+        _, num_bcs, nonzero_entries = CountMatrix._load_dims_from_legacy_v1_h5(filename)
+        return CountMatrix.get_mem_gb_from_matrix_dim(num_bcs, nonzero_entries)
+
+    @classmethod
+    def load(cls, group):
+        '''Load from an HDF5 group.'''
+        feature_ref = CountMatrix.load_feature_ref_from_h5_group(group)
+
+        bcs = cls.load_bcs_from_h5_group(group)
+
+        shape = group[h5_constants.H5_MATRIX_SHAPE_ATTR][:]
+        data = group[h5_constants.H5_MATRIX_DATA_ATTR][:]
+        indices = group[h5_constants.H5_MATRIX_INDICES_ATTR][:]
+        indptr = group[h5_constants.H5_MATRIX_INDPTR_ATTR][:]
+
+        # Check to make sure indptr increases monotonically (to catch overflow bugs)
         assert np.all(np.diff(indptr)>=0)
 
-        matrix.m = sp_sparse.csc_matrix((data, indices, indptr), shape=shape)
+        matrix = sp_sparse.csc_matrix((data, indices, indptr), shape=shape)
 
-        return matrix
-
-    @staticmethod
-    def load_chunk(group, col_start, col_end):
-        ''' Load a submatrix specified by the given column (barcode) range from an h5 group
-        Args: col_start, col_end - half-open interval of column indices to load'''
-        # Check bounds
-        shape = getattr(group, cr_constants.H5_MATRIX_SHAPE_ATTR).read()
-        assert col_start >= 0 and col_start < shape[1]
-        assert col_end >= 0 and col_end <= shape[1]
-
-        # Load genes and barcodes
-        genes = GeneBCMatrix.load_genes_from_h5_group(group)
-        bcs = GeneBCMatrix.load_bcs_from_h5_group(group)[col_start:col_end]
-        matrix = GeneBCMatrix(genes, bcs)
-
-        # Get views into full matrix
-        data = getattr(group, cr_constants.H5_MATRIX_DATA_ATTR)
-        indices = getattr(group, cr_constants.H5_MATRIX_INDICES_ATTR)
-        indptr = getattr(group, cr_constants.H5_MATRIX_INDPTR_ATTR)
-
-        # Determine extents of selected columns
-        ind_start = indptr[col_start]
-        if col_end < len(indptr)-1:
-            # Last index (end-exclusive) is the start of the next column
-            ind_end = indptr[col_end]
-        else:
-            # Last index is the last index in the matrix
-            ind_end = len(data)
-
-        chunk_data = data[ind_start:ind_end]
-        chunk_indices = indices[ind_start:ind_end]
-        chunk_indptr = np.append(indptr[col_start:col_end], ind_end) - ind_start
-        chunk_shape = (shape[0], col_end - col_start)
-
-        matrix.m = sp_sparse.csc_matrix((chunk_data, chunk_indices, chunk_indptr), shape=chunk_shape)
-
-        return matrix
-
-    @staticmethod
-    def load_h5(filename):
-        """ Load just the first GeneBCMatrix from a GeneBCMatrices file. """
-        matrices = GeneBCMatrices.load_h5(filename).matrices.values()
-        if len(matrices) > 0:
-            return matrices[0]
-        else:
-            return None
+        return cls(feature_ref=feature_ref, bcs=bcs, matrix=matrix)
 
     @staticmethod
     def load_bcs_from_h5_group(group):
-        """ Load just the barcode sequences from an h5 """
-        return list(getattr(group, cr_constants.H5_BCS_ATTR).read())
+        '''Load just the barcode sequences from an h5 group.'''
+        return list(group[h5_constants.H5_BCS_ATTR][:])
 
     @staticmethod
-    def load_genes_from_h5_group(group):
-        """ Load just the genes from an h5 """
-        gene_ids = list(getattr(group, cr_constants.H5_GENE_IDS_ATTR).read())
-
-        if hasattr(group, cr_constants.H5_GENE_NAMES_ATTR):
-            gene_names = list(getattr(group, cr_constants.H5_GENE_NAMES_ATTR).read())
+    def load_bcs_from_h5(filename):
+        '''Load just the barcode sequences from an HDF5 group. '''
+        h5_version = CountMatrix.get_format_version_from_h5(filename)
+        if h5_version == 1:
+            return CountMatrix._load_bcs_from_legacy_v1_h5(filename)
         else:
-            gene_names = gene_ids
-
-        assert len(gene_ids) == len(gene_names)
-        genes = [cr_constants.Gene(id, name, None, None, None) for id, name in itertools.izip(gene_ids, gene_names)]
-
-        return genes
+            with h5.File(filename, 'r') as f:
+                return CountMatrix.load_bcs_from_h5_group(f['matrix'])
 
     @staticmethod
-    def hstack(matrix_list, strict=True):
-        if not matrix_list:
-            return None
+    def _load_bcs_from_legacy_v1_h5(filename):
+        '''Load just the barcode sequences from a legacy h5py.File (format version 1)'''
+        with h5.File(filename, 'r') as f:
+            genomes = f.keys()
+            barcodes = set()
+            for genome in genomes:
+                group = f[genome]
+                barcodes.update(group['barcodes'])
+            return list(barcodes)
 
-        # Compile genes for new stacked matrix
-        if strict:
-            # All input matrices must have equivalent gene lists, this also becomes output list
-            genes = list(matrix_list[0].genes)
-            for matrix in matrix_list[1:]:
-                if (len(genes) != len(matrix.genes) or any(genes[i] != matrix.genes[i]
-                                                           for i in xrange(len(genes)))):
-                    raise ValueError('Stacking GeneBCMatrix objects with incompatible genes')
-        else:
-            # Output gene list is sorted union of input gene lists
-            genes = sorted(set().update(m.genes for m in matrix_list))
+    @staticmethod
+    def load_feature_ref_from_h5_group(group):
+        '''Load just the FeatureRef from an h5py.Group.'''
+        feature_group = group[h5_constants.H5_FEATURE_REF_ATTR]
+        return FeatureReference.from_hdf5(feature_group)
 
-        # Compile barcodes for new stacked matrix
-        bcs = list()
-        bcs_group_offset = 0
-        bcs_map = dict()
-        for i, matrix in enumerate(matrix_list):
-            last_bc = matrix.bcs[-1]
-            if cr_constants.GEM_GROUP_SEP in last_bc:
-                # matrix has GEM group tagged barcodes, so strip these and renumber
-                n_bcs_groups = int(last_bc.split(cr_constants.GEM_GROUP_SEP)[1])
-                for bc in matrix.bcs:
-                    bc_seq, old_group = bc.split(cr_constants.GEM_GROUP_SEP)
-                    new_bc = cr_constants.GEM_GROUP_SEP.join([bc_seq,
-                                                              str(int(old_group)+bcs_group_offset)])
-                    bcs.append(new_bc)
-                    bcs_map[(i, bc)] = new_bc
-                bcs_group_offset += n_bcs_groups
-            else:
-                # matrix does not have GEM group tagged barcodes, so give all same new number
-                for bc in matrix.bcs:
-                    new_bc = cr_constants.GEM_GROUP_SEP.join([bc, str(1+bcs_group_offset)])
-                    bcs.append(new_bc)
-                    bcs_map[(i, bc)] = new_bc
-                bcs_group_offset += 1
-
-        # Set up new matrix and add counts
-        new_mat = GeneBCMatrix(genes, bcs)
-        if strict:
-            new_mat.m = sp_sparse.hstack([matrix.m for matrix in matrix_list])
-        else:
-            for i, matrix in enumerate(matrix_list):
-                for gene, bc, value in matrix.get_nonzero():
-                    new_mat.add(gene.id, bcs_map[(i, bc)], value)
-
-        return new_mat
+    @staticmethod
+    def load_feature_ref_from_h5_file(filename):
+        """Load just the FeatureRef from a matrix HDF5 file."""
+        with h5.File(filename, 'r') as f:
+            return CountMatrix.load_feature_ref_from_h5_group(f['matrix'])
 
     def tolil(self):
         if type(self.m) is not sp_sparse.lil_matrix:
@@ -327,36 +599,43 @@ class GeneBCMatrix:
         if type(self.m) is not sp_sparse.csc_matrix:
             self.m = self.m.tocsc()
 
-    def _sum(self, matrix, axis=0):
-        return np.reshape(np.asarray(matrix.sum(axis=axis)), matrix.shape[1-axis])
+    def select_axes_above_threshold(self, threshold=0):
+        '''Select axes with sums greater than the threshold value.
 
-    def _topN(self, array, topN=cr_constants.TOP_N):
-        if array.shape:
-            items = [(i, count) for i, count in enumerate(array)]
-        else:
-            items = [(0, array.item())]
-        sorted_items = sorted(items, key=operator.itemgetter(1), reverse=True)
-        return sorted_items[:topN]
+        Returns:
+            (CountMatrix, np.array of int, np.array of int):
+                New count matrix, non-zero bc indices, feat indices
+        '''
 
-    def select_nonzero_axes(self):
-        new_mat = GeneBCMatrix(list(self.genes), list(self.bcs))
-        new_mat.m = self.m
+        new_mat = copy.deepcopy(self)
 
-        nonzero_bcs = np.flatnonzero(new_mat.get_reads_per_bc())
-        if new_mat.bcs_dim > len(nonzero_bcs):
+        nonzero_bcs = np.flatnonzero(new_mat.get_counts_per_bc() > threshold)
+        if self.bcs_dim > len(nonzero_bcs):
             new_mat = new_mat.select_barcodes(nonzero_bcs)
 
-        nonzero_genes = np.flatnonzero(new_mat.get_reads_per_gene())
-        if new_mat.genes_dim > len(nonzero_genes):
-            new_mat = new_mat.select_genes(nonzero_genes)
+        nonzero_features = np.flatnonzero(new_mat.get_counts_per_feature() > threshold)
+        if new_mat.features_dim > len(nonzero_features):
+            new_mat = new_mat.select_features(nonzero_features)
 
-        return new_mat, nonzero_bcs, nonzero_genes
+        if len(nonzero_bcs) == 0 or len(nonzero_features) == 0:
+            raise NullAxisMatrixError()
 
-    """ Select a subset of barcodes and return the resulting GeneBCMatrix """
-    def select_barcodes(self, barcode_indices):
-        new_mat = GeneBCMatrix(list(self.genes), np.array(self.bcs)[barcode_indices])
-        new_mat.m = self.m[:, barcode_indices]
-        return new_mat
+        return new_mat, nonzero_bcs, nonzero_features
+
+    def select_nonzero_axes(self):
+        '''Select axes with nonzero sums.
+
+        Returns:
+            (CountMatrix, np.array of int, np.array of int):
+                New count matrix, non-zero bc indices, feat indices
+        '''
+        return self.select_axes_above_threshold(0)
+
+    def select_barcodes(self, indices):
+        '''Select a subset of barcodes and return the resulting CountMatrix.'''
+        return CountMatrix(feature_ref=self.feature_ref,
+                           bcs=[self.bcs[i] for i in indices],
+                           matrix=self.m[:, indices])
 
     def select_barcodes_by_seq(self, barcode_seqs):
         return self.select_barcodes([self.bc_to_int(bc) for bc in barcode_seqs])
@@ -365,472 +644,225 @@ class GeneBCMatrix:
         return self.select_barcodes_by_seq(
             [bc for bc in self.bcs if gem_group == cr_utils.split_barcode_seq(bc)[1]])
 
-    """ Select a subset of genes and return the resulting GeneBCMatrix """
-    def select_genes(self, gene_indices):
-        new_genes = [cr_constants.Gene(gene[0], gene[1], None, None, None) for \
-                     gene in np.array(self.genes)[gene_indices]]
-        new_mat = GeneBCMatrix(new_genes, list(self.bcs))
-        new_mat.m = self.m[gene_indices,:]
-        return new_mat
+    def select_features(self, indices):
+        '''Select a subset of features and return the resulting matrix.
+        We also update FeatureDefs to keep their indices consistent with their new position'''
 
-    def get_unique_genes_per_bc(self):
-        return self._sum(self.m > 0, axis=0)
+        old_feature_defs = [self.feature_ref.feature_defs[i] for i in indices]
 
-    def get_reads_per_bc(self):
-        return self._sum(self.m, axis=0)
+        updated_feature_defs = [FeatureDef( index = i,
+                                            id = fd.id,
+                                            name = fd.name,
+                                            feature_type = fd.feature_type,
+                                            tags = fd.tags
+                                          )
+                                          for (i, fd) in enumerate(old_feature_defs)]
 
-    def get_reads_per_gene(self):
-        return self._sum(self.m, axis=1)
+        feature_ref = FeatureReference(feature_defs = updated_feature_defs,
+                                       all_tag_keys = self.feature_ref.all_tag_keys)
+
+        return CountMatrix(feature_ref=feature_ref,
+                           bcs=self.bcs,
+                           matrix=self.m[indices, :])
+
+    def select_features_by_ids(self, feature_ids):
+        return self.select_features(self.feature_ids_to_ints(feature_ids))
+
+    def select_features_by_genome(self, genome):
+        '''Select the subset of gene-expression features for genes in a specific genome'''
+        indices = []
+        for feature in self.feature_ref.feature_defs:
+            if feature.feature_type == lib_constants.DEFAULT_LIBRARY_TYPE:
+                if feature.tags['genome'] == genome:
+                    indices.append(feature.index)
+        return self.select_features(indices)
+
+    def select_features_by_type(self, feature_type):
+        '''Select the subset of features with a particular feature type (e.g. "Gene Expression")'''
+        indices = []
+        for feature in self.feature_ref.feature_defs:
+            if feature.feature_type == feature_type:
+                indices.append(feature.index)
+        return self.select_features(indices)
+
+    def get_count_of_feature_type(self, feature_type):
+        ''' Count how many features in the matrix are of a given type. (e.g. "Gene Expression")'''
+        total = 0
+        for feature in self.feature_ref.feature_defs:
+            if feature.feature_type == feature_type:
+                total += 1
+        return total
+
+    @staticmethod
+    def _get_genomes_from_feature_ref(feature_ref):
+        genomes = OrderedDict()
+        for feature in feature_ref.feature_defs:
+            if feature.feature_type == lib_constants.DEFAULT_LIBRARY_TYPE:
+                genomes[feature.tags['genome']] = True
+        return genomes.keys()
+
+    def get_genomes(self):
+        '''Get a list of the distinct genomes represented by my gene expression features'''
+        return CountMatrix._get_genomes_from_feature_ref(self.feature_ref)
+
+    @staticmethod
+    def get_genomes_from_h5(filename):
+        '''Get a list of the distinct genomes from a matrix HDF5 file'''
+        h5_version = CountMatrix.get_format_version_from_h5(filename)
+        if h5_version == 1:
+            return CountMatrix._get_genomes_from_legacy_v1_h5(filename)
+        else:
+            with h5.File(filename, 'r') as f:
+                feature_ref = CountMatrix.load_feature_ref_from_h5_group(f['matrix'])
+                return CountMatrix._get_genomes_from_feature_ref(feature_ref)
+
+    @staticmethod
+    def _get_genomes_from_legacy_v1_h5(filename):
+        '''Get a list of the distinct genomes from a legacy h5py.File (format version 1)'''
+        with h5.File(filename, 'r') as f:
+            return f.keys()
+
+    def get_unique_features_per_bc(self):
+        return sum_sparse_matrix(self.m[self.m > 0], axis=0)
+
+    def get_counts_per_bc(self):
+        return sum_sparse_matrix(self.m, axis=0)
+
+    def get_counts_per_feature(self):
+        return sum_sparse_matrix(self.m, axis=1)
+
+    def get_numbcs_per_feature(self):
+        return sum_sparse_matrix(self.m > 0, axis=1)
 
     def get_top_bcs(self, cutoff):
-        reads_per_bc = self.get_reads_per_bc()
+        reads_per_bc = self.get_counts_per_bc()
         index = max(0, min(reads_per_bc.size, cutoff) - 1)
         value = sorted(reads_per_bc, reverse=True)[index]
         return np.nonzero(reads_per_bc >= value)[0]
 
-    def report(self, genome, barcode_summary_h5, recovered_cells, cell_bc_seqs):
-        d = {}
 
-        filtered_mat = self.select_barcodes_by_seq(cell_bc_seqs)
-        cell_bc_indices = self.bcs_to_ints(cell_bc_seqs)
-        n_cell_bcs = len(cell_bc_seqs)
-
-        # Don't compute metrics if no cells detected
-        if n_cell_bcs == 0:
-            return d
-
-        # Compute matrix density
-        d['filtered_gene_bc_matrix_density'] = tk_stats.robust_divide(filtered_mat.m.getnnz(), filtered_mat.m.shape[0]*filtered_mat.m.shape[1])
-
-        reads_per_gene = filtered_mat.get_reads_per_gene()
-        top_genes_with_reads = {filtered_mat.int_to_gene_id(i): int(count) for i, count in filtered_mat._topN(reads_per_gene)}
-        d['filtered_bcs_top_genes_with_reads'] = top_genes_with_reads
-
-        unique_bcs_per_gene = filtered_mat._sum(filtered_mat.m >= cr_constants.MIN_READS_PER_BARCODE, axis=1)
-        top_genes_with_unique_bcs = {filtered_mat.int_to_gene_id(i): int(count) for i, count in filtered_mat._topN(unique_bcs_per_gene)}
-        d['filtered_bcs_top_genes_with_unique_bcs'] = top_genes_with_unique_bcs
-
-        # Total genes and counts
-        total_genes_detected = np.count_nonzero(reads_per_gene)
-        total_counts = int(reads_per_gene.sum())
-        d['filtered_bcs_total_unique_genes_detected'] = total_genes_detected
-        d['filtered_bcs_total_counts'] = total_counts
-
-        def _summarize_per_barcode(a):
-            mean = np.mean(a)
-            stddev = np.std(a)
-            return {
-                'mean': mean,
-                'median': np.median(a),
-                'cv': tk_stats.robust_divide(float(stddev), float(mean)),
-                'iqr': np.percentile(a, 75) - np.percentile(a, 25),
-            }
-
-        # Unique genes per bc
-        unique_genes_per_bc = filtered_mat._sum(filtered_mat.m >= cr_constants.MIN_READS_PER_GENE, axis=0)
-        unique_genes_stats = _summarize_per_barcode(unique_genes_per_bc)
-        for stat, value in unique_genes_stats.iteritems():
-            d['filtered_bcs_%s_unique_genes_detected' % stat] = value
-
-        # Counts per bc
-        counts_per_bc_stats = _summarize_per_barcode(filtered_mat._sum(filtered_mat.m, axis=0))
-        for stat, value in counts_per_bc_stats.iteritems():
-            d['filtered_bcs_%s_counts' % stat] = value
-
-        # Cumulative fraction of counts going to top bcs
-        d['filtered_bcs_cum_frac'] = tk_stats.robust_divide(filtered_mat.m.sum(), self.m.sum())
-
-        # cDNA PCR duplication in top bcs
-        dupe_candidate_h5_key = cr_utils.format_barcode_summary_h5_key(genome, cr_constants.TRANSCRIPTOME_REGION, cr_constants.CONF_MAPPED_BC_READ_TYPE)
-        if dupe_candidate_h5_key in barcode_summary_h5:
-            n_reads = barcode_summary_h5[dupe_candidate_h5_key][list(cell_bc_indices)].sum()
-            n_deduped_reads = filtered_mat.m.sum()
-        else:
-            n_reads = 0
-            n_deduped_reads = 0
-        d['filtered_bcs_%s_dupe_reads_frac' % cr_constants.CDNA_PCR_DUPE_TYPE] = 1 - tk_stats.robust_divide(n_deduped_reads, n_reads)
-
-        # Reads per top bc for the various read types (computed over top bcs)
-        for read_type in cr_constants.MATRIX_REPORT_READ_TYPES:
-            # Compute (n_reads)/(n_bcs) over all bcs and over top bcs
-            per_bc_metric = 'filtered_bcs_%s_reads_per_filtered_bc' % read_type
-
-            # Cumulative fraction of reads going to top bcs
-            frac_metric = 'filtered_bcs_%s_reads_cum_frac' % read_type
-
-            if read_type in cr_constants.MATRIX_USE_MATRIX_FOR_READ_TYPE:
-                n_reads = filtered_mat.m.sum()
-                n_all_reads = self.m.sum()
-            else:
-                h5_key = cr_utils.format_barcode_summary_h5_key(genome, cr_constants.TRANSCRIPTOME_REGION, read_type)
-                if h5_key in barcode_summary_h5:
-                    n_reads = barcode_summary_h5[h5_key][list(cell_bc_indices)].sum()
-                    n_all_reads = barcode_summary_h5[h5_key][()].sum()
-                else:
-                    n_reads = 0
-                    n_all_reads = 0
-            d[per_bc_metric] = tk_stats.robust_divide(n_reads, n_cell_bcs)
-            d[frac_metric] = tk_stats.robust_divide(n_reads, n_all_reads)
-        return d
-
-    def correct_for_saturation(self, diversity, genome):
-        m_coo = self.m.tocoo()
-        for i, j, old_count in itertools.izip(m_coo.row, m_coo.col, m_coo.data):
-            new_count = cr_stats.convert_umi_count_to_transcript_count(old_count, diversity)
-            self.m[i,j] = new_count
-
-class GeneBCMatrices:
-    def __init__(self, genomes=[], genes=[], barcode_whitelist=None, dtype='int32'):
-        self.matrices = {}
-        for genome, g in zip(genomes, genes):
-            self.matrices[genome] = GeneBCMatrix(g, barcode_whitelist, dtype=dtype)
-
-    def get_genomes(self):
-        return self.matrices.keys()
-
-    def get_matrix(self, genome):
-        return self.matrices.get(genome)
-
-    def add(self, genome, gene_id, bc):
-        self.matrices[genome].add(gene_id, bc)
-
-    def tolil(self):
-        for matrix in self.matrices.itervalues():
-            matrix.tolil()
-
-    def tocoo(self):
-        for matrix in self.matrices.itervalues():
-            matrix.tocoo()
-
-    def tocsc(self):
-        for matrix in self.matrices.itervalues():
-            matrix.tocsc()
-
-    def save_mex(self, base_dir):
-        """ Save matrices in Matrix Market Exchange format """
-        self.tocsc()
-        for name, matrix in self.matrices.iteritems():
-            mex_dir = os.path.join(base_dir, name)
-            cr_utils.makedirs(mex_dir, allow_existing=True)
-
-            out_matrix_prefix = os.path.join(mex_dir, 'matrix')
-            out_genes_fn = os.path.join(mex_dir, 'genes.tsv')
-            out_barcodes_fn = os.path.join(mex_dir, 'barcodes.tsv')
-
-            # NOTE: mex does not understand unsigned types, so cast here
-            sp_io.mmwrite(out_matrix_prefix, matrix.m.astype('int32'))
-            with open(out_genes_fn, 'w') as f:
-                for gene in matrix.genes:
-                    f.write(gene.id + '\t' + gene.name + '\n')
-            with open(out_barcodes_fn, 'w') as f:
-                for bc in matrix.bcs:
-                    f.write(bc + '\n')
-
-    def save_dense_csv(self, basename):
-        for genome, gbm in self.matrices.iteritems():
-            gbm.save_dense_csv("%s_%s.csv" % (basename, genome))
-
-    def save_h5(self, filename, extra_attrs={}):
-        self.tocsc()
-        filters = tables.Filters(complevel = cr_constants.H5_COMPRESSION_LEVEL)
-        with tables.open_file(filename, 'w', filters = filters) as f:
-            f.set_node_attr('/', cr_constants.H5_FILETYPE_KEY, MATRIX_H5_FILETYPE)
-            # set optional top-level attributes
-            for (k,v) in extra_attrs.iteritems():
-                f.set_node_attr('/', k, v)
-            for genome, matrix in self.matrices.iteritems():
-                group = f.create_group(f.root, genome)
-                matrix.save_h5(f, group)
-
-    def save_barcode_summary_h5(self, filename):
-        """ Generate a minimal barcode summary h5 without going through the reporter.
-        NOTE: only use this if all genomes have the same set of barcodes, i.e. a raw matrix.
+    def save_mex(self, base_dir, save_features_func, metadata=None, compress=True):
+        """Save in Matrix Market Exchange format.
+        Args:
+          base_dir (str): Path to directory to write files in.
+          save_features_func (func): Func that takes (FeatureReference, base_dir, compress) and writes
+                                     a file describing the features.
+          metadata (dict): Optional metadata to encode into the comments as JSON.
         """
-        bc_sequences = None
-        bc_table_cols = {}
-        for (genome, matrix) in self.matrices.iteritems():
-            if bc_sequences is None:
-                bc_sequences = np.array(matrix.bcs)
-                bc_table_cols[cr_constants.H5_BC_SEQUENCE_COL] = bc_sequences
-            conf_mapped_deduped_reads_key = cr_utils.format_barcode_summary_h5_key(genome,
-                cr_constants.TRANSCRIPTOME_REGION, cr_constants.CONF_MAPPED_DEDUPED_READ_TYPE)
-            conf_mapped_deduped_reads = matrix.get_reads_per_bc()
-            if len(bc_sequences) != len(conf_mapped_deduped_reads):
-                raise ValueError('Cannot write barcode summary since different genomes have different number of barcodes!')
-            bc_table_cols[conf_mapped_deduped_reads_key] = conf_mapped_deduped_reads
-        cr_utils.write_h5(filename, bc_table_cols)
-
-    def merge(self, filename):
         self.tocoo()
-        with tables.open_file(filename, 'r') as f:
-            for group in f.list_nodes(f.root):
-                genome = group._v_name
-                if genome in self.matrices:
-                    self.matrices[genome].merge(group)
-                else:
-                    self.matrices[genome] = GeneBCMatrix.load(group)
+
+        cr_io.makedirs(base_dir, allow_existing=True)
+
+        out_matrix_fn = os.path.join(base_dir, 'matrix.mtx')
+        out_barcodes_fn = os.path.join(base_dir, 'barcodes.tsv')
+        if compress:
+            out_matrix_fn += '.gz'
+            out_barcodes_fn += '.gz'
+
+        # This method only supports an integer matrix.
+        assert self.m.dtype in ['uint32', 'int32', 'uint64', 'int64']
+        assert type(self.m) == sp_sparse.coo.coo_matrix
+
+        rows, cols = self.m.shape
+        # Header fields in the file
+        rep = 'coordinate'
+        field = 'integer'
+        symmetry = 'general'
+
+        metadata = metadata or {}
+        metadata.update({
+            'format_version': MATRIX_H5_VERSION,
+        })
+
+        metadata_str = json.dumps(metadata)
+        comment = 'metadata_json: %s' % metadata_str
+
+        with cr_io.open_maybe_gzip(out_matrix_fn, 'w') as stream:
+            # write initial header line
+            stream.write(np.compat.asbytes('%%MatrixMarket matrix {0} {1} {2}\n'.format(rep, field, symmetry)))
+
+            # write comments
+            for line in comment.split('\n'):
+                stream.write(np.compat.asbytes('%%%s\n' % (line)))
+
+            # write shape spec
+            stream.write(np.compat.asbytes('%i %i %i\n' % (rows, cols, self.m.nnz)))
+            # write row, col, val in 1-based indexing
+            for r, c, d in itertools.izip(self.m.row+1, self.m.col+1, self.m.data):
+                stream.write(np.compat.asbytes(("%i %i %i\n" % (r, c, d))))
+
+        # both GEX and ATAC provide an implementation of this in respective feature_ref.py
+        save_features_func(self.feature_ref, base_dir, compress=compress)
+
+        with cr_io.open_maybe_gzip(out_barcodes_fn, 'w') as f:
+            for bc in self.bcs:
+                f.write(bc + '\n')
 
     @staticmethod
-    def load_mtx(basedir):
-        matrices = GeneBCMatrices()
-        for genome in os.listdir(basedir):
-            matrices.matrices[genome] = GeneBCMatrix.load_mtx(os.path.join(basedir,genome))
-        return matrices
+    def get_format_version_from_h5(filename):
+        """ """
+        with h5.File(filename, 'r') as f:
+            if MATRIX_H5_VERSION_KEY in f.attrs:
+                version = f.attrs[MATRIX_H5_VERSION_KEY]
+            else:
+                version = 1
+
+            return version
 
     @staticmethod
-    def load_h5(filename):
-        matrices = GeneBCMatrices()
-        with tables.open_file(filename, 'r') as f:
-            for group in f.list_nodes(f.root):
-                genome = group._v_name
-                matrices.matrices[genome] = GeneBCMatrix.load(group)
-        return matrices
+    def load_h5_file(filename):
+        with h5.File(filename, 'r') as f:
+            if h5_constants.H5_FILETYPE_KEY not in f.attrs or \
+               f.attrs[h5_constants.H5_FILETYPE_KEY] != MATRIX_H5_FILETYPE:
+                raise ValueError('HDF5 file is not a valid matrix HDF5 file.')
 
-    @staticmethod
-    def load_dims_from_h5(filename):
-        dims = {}
-        with tables.open_file(filename, 'r') as f:
-            for group in f.list_nodes(f.root):
-                genome = group._v_name
-                dims[genome] = GeneBCMatrix.load_dims(group)
-        return dims
+            if MATRIX_H5_VERSION_KEY in f.attrs:
+                version = f.attrs[MATRIX_H5_VERSION_KEY]
+            else:
+                version = 1
+
+            if version > MATRIX_H5_VERSION:
+                raise ValueError('Matrix HDF5 file format version (%d) is a newer version that is not supported by this version of the software.' % version)
+            if version < MATRIX_H5_VERSION:
+                #raise ValueError('Matrix HDF5 file format version (%d) is an older version that is no longer supported.' % version)
+                return CountMatrix.from_legacy_v1_h5(f)
+
+            if 'matrix' not in f.keys():
+                raise ValueError('Could not find the "matrix" group inside the matrix HDF5 file.')
+
+            return CountMatrix.load(f['matrix'])
 
     @staticmethod
     def count_cells_from_h5(filename):
         # NOTE - this double-counts doublets.
-        total_cells = 0
-        for (genes, bcs, entries) in GeneBCMatrices.load_dims_from_h5(filename).values():
-            total_cells += bcs
-        return total_cells
-
-    @staticmethod
-    def load_genomes_from_h5(filename):
-        genomes = []
-        with tables.open_file(filename, 'r') as f:
-            for group in f.list_nodes(f.root):
-                genome = group._v_name
-                genomes.append(genome)
-        return genomes
+        _, bcs, _ = CountMatrix.load_dims_from_h5(filename)
+        return bcs
 
     @staticmethod
     def load_chemistry_from_h5(filename):
         with tables.open_file(filename, 'r') as f:
             try:
-                chemistry = f.get_node_attr('/', cr_constants.H5_CHEMISTRY_DESC_KEY)
+                chemistry = f.get_node_attr('/', h5_constants.H5_CHEMISTRY_DESC_KEY)
             except AttributeError:
                 chemistry = "Unknown"
         return chemistry
 
-    def _get_reads(self, func):
-        reads = None
-        for matrix in self.matrices.itervalues():
-            genome_reads = getattr(matrix, func)()
-            if reads is not None:
-                reads += genome_reads
-            else:
-                reads = genome_reads
-        return reads
-
-    def get_unique_genes_per_bc(self):
-        return self._get_reads('get_unique_genes_per_bc')
-
-    def get_reads_per_bc(self):
-        return self._get_reads('get_reads_per_bc')
-
-    def get_reads_per_gene(self):
-        return self._get_reads('get_reads_per_gene')
-
-    def _get_stacked_reads_per_bc(self, genomes, barcode_seqs):
-        """ Return gene-bc-matrices vertically stacked across genomes """
-        # Ensure barcode indices are equivalent across matrices
-        bcs = self.matrices.values()[0].bcs
-        for matrix in self.matrices.values():
-            assert matrix.bcs == bcs
-
-        reads_per_bc = None
-        for matrix in [self.matrices[k] for k in genomes]:
-            genome_reads_per_bc = matrix.select_barcodes_by_seq(barcode_seqs).get_reads_per_bc()
-            if reads_per_bc is not None:
-                reads_per_bc = np.vstack((reads_per_bc, genome_reads_per_bc))
-            else:
-                reads_per_bc = genome_reads_per_bc
-        return reads_per_bc
-
-    def union_barcodes(self, cell_bc_seqs, genomes=None):
-        """ Take the union of all barcodes present in genome-specific matrices;
-        this is used to get a total cell count """
-        if genomes is None:
-            genomes = self.matrices.keys()
-        assert len(cell_bc_seqs) == len(genomes)
-        barcodes = set()
-        for txome_cell_bc_seqs in cell_bc_seqs:
-            barcodes.update(txome_cell_bc_seqs)
-        return sorted(barcodes)
-
-    def _report_genome_agnostic_metrics(self, summary_json_paths, barcode_summary_h5, recovered_cells,
-                                        cell_bc_seqs):
-        """ Report metrics that are computed across all barcodes and all genomes """
-        d = {}
-
-        # Get total_reads and *_conf_mapped_reads_frac
-        merged_jsons = cr_utils.merge_jsons_as_dict(summary_json_paths)
-        total_reads = int(merged_jsons['total_reads'])
-        conf_mapped_metrics = ['_'.join([ref,
-                                         cr_constants.TRANSCRIPTOME_REGION,
-                                         cr_constants.CONF_MAPPED_READ_TYPE,
-                                         'reads_frac']) for ref in self.matrices.keys()]
-        total_conf_mapped_reads = sum(float(merged_jsons.get(metric, 0)) * float(total_reads) for metric in conf_mapped_metrics)
-
-        # Get number of cell bcs across all genomes
-        cell_bcs_union = self.union_barcodes(cell_bc_seqs)
-        n_cell_bcs_union = len(cell_bcs_union)
-        d['filtered_bcs_transcriptome_union'] = n_cell_bcs_union
-        d['%s_filtered_bcs' % cr_constants.MULTI_REFS_PREFIX] = n_cell_bcs_union
-
-        # Report reads/cell across all genomes
-        d['%s_%s_total_raw_reads_per_filtered_bc' % (cr_constants.MULTI_REFS_PREFIX, cr_constants.TRANSCRIPTOME_REGION)] = tk_stats.robust_divide(total_reads, n_cell_bcs_union)
-        d['%s_%s_total_conf_mapped_reads_per_filtered_bc' % (cr_constants.MULTI_REFS_PREFIX, cr_constants.TRANSCRIPTOME_REGION)] = tk_stats.robust_divide(total_conf_mapped_reads, n_cell_bcs_union)
-
-        # Total UMI counts across all matrices and all filtered barcodes
-        total_umi_counts = 0
-        for mat in self.matrices.values():
-            total_umi_counts += mat.select_barcodes_by_seq(cell_bcs_union).m.sum()
-
-
-        # Deviation from cell load
-        if recovered_cells is None:
-            d['%s_filtered_bcs_difference_from_recovered_cells' % cr_constants.MULTI_REFS_PREFIX] = 0
-            d['%s_filtered_bcs_relative_difference_from_recovered_cells' % cr_constants.MULTI_REFS_PREFIX] = 0
-        else:
-            d['%s_filtered_bcs_difference_from_recovered_cells' % cr_constants.MULTI_REFS_PREFIX] = int(n_cell_bcs_union) - int(recovered_cells)
-            d['%s_filtered_bcs_relative_difference_from_recovered_cells' % cr_constants.MULTI_REFS_PREFIX] = tk_stats.robust_divide(n_cell_bcs_union - recovered_cells, recovered_cells)
-
-        # Duplicate these metrics across genomes for backwards-compat
-        for genome in self.matrices.keys():
-            d['%s_total_raw_reads_per_filtered_bc' % genome] = tk_stats.robust_divide(total_reads, n_cell_bcs_union)
-            d['%s_total_conf_mapped_reads_per_filtered_bc' % genome] = tk_stats.robust_divide(total_conf_mapped_reads, n_cell_bcs_union)
-
-            for read_type in cr_constants.MATRIX_REPORT_READ_TYPES:
-                metric = '%s_total_%s_reads_per_filtered_bc' % (genome, read_type)
-                if read_type in cr_constants.MATRIX_USE_MATRIX_FOR_READ_TYPE:
-                    n_reads = total_umi_counts
-                else:
-                    h5_keys = ['%s_%s_%s_barcode_reads' % (txome,
-                                                           cr_constants.TRANSCRIPTOME_REGION,
-                                                           read_type) for txome in self.matrices.keys()]
-                    h5_keys = [x for x in h5_keys if x in barcode_summary_h5]
-                    n_reads = sum(np.array(barcode_summary_h5[h5_key]).sum() for h5_key in h5_keys)
-                d[metric] = tk_stats.robust_divide(n_reads, n_cell_bcs_union)
-
-        # Compute fraction of reads usable (conf mapped, barcoded, filtered barcode)
-        unique_barcodes = set(cell_bcs_union)
-        in_unique_barcodes_vectorized = np.vectorize(lambda x: x in unique_barcodes)
-        filtered_bc_h5_row = in_unique_barcodes_vectorized(np.array(barcode_summary_h5['bc_sequence']))
-
-        usable_reads = 0
-
-        for txome in self.matrices.keys():
-            h5_key = '%s_%s_%s_barcode_reads' % (txome,
-                                                 cr_constants.TRANSCRIPTOME_REGION,
-                                                 cr_constants.CONF_MAPPED_BC_READ_TYPE)
-
-            if h5_key not in barcode_summary_h5:
-                continue
-
-            usable_reads += (filtered_bc_h5_row * np.array(barcode_summary_h5[h5_key])).sum()
-
-        d['%s_transcriptome_usable_reads_frac' % cr_constants.MULTI_REFS_PREFIX] = tk_stats.robust_divide(usable_reads, total_reads)
-
-
-        # Compute matrix density across all genomes
-        total_nonzero_entries, total_entries = 0, 0
-        for matrix in self.matrices.values():
-            filtered_mat = matrix.select_barcodes_by_seq(cell_bcs_union)
-            total_nonzero_entries += filtered_mat.m.getnnz()
-            total_entries += filtered_mat.m.shape[0] * filtered_mat.m.shape[1]
-        d['%s_filtered_gene_bc_matrix_density' % cr_constants.MULTI_REFS_PREFIX] = tk_stats.robust_divide(total_nonzero_entries, total_entries)
-
-        return d
-
-    def report(self, summary_json_paths, barcode_summary_h5_path, recovered_cells, cell_bc_seqs):
-        assert len(cell_bc_seqs) == len(self.matrices)
-
-        barcode_summary_h5 = h5.File(barcode_summary_h5_path, 'r')
-
-        d = {}
-
-        d.update(self._report_genome_agnostic_metrics(
-            summary_json_paths, barcode_summary_h5, recovered_cells, cell_bc_seqs))
-
-        # Compute genome-specific metrics
-        for i, (genome, matrix) in enumerate(self.matrices.iteritems()):
-            for key, value in matrix.report(genome,
-                                            barcode_summary_h5,
-                                            recovered_cells,
-                                            cell_bc_seqs=cell_bc_seqs[i],
-                                        ).iteritems():
-                key = '_'.join([genome, key])
-                d[key] = value
-        return d
-
-    def correct_for_saturation(self, summary_json_paths):
-        merged_jsons = cr_utils.merge_jsons_as_dict(summary_json_paths)
-
-        for genome, matrix in self.matrices.iteritems():
-            effective_umi_diversity = merged_jsons.get('%s_conf_mapped_effective_umi_diversity' % genome, 0)
-            matrix.correct_for_saturation(float(effective_umi_diversity), genome)
-
-    @staticmethod
-    def build_from_mol_counter(molecule_counter, subsample_rate=1.0,
-                               subsample_result=None):
-        """ Construct a GeneBCMatrices object from a MoleculeCounter.
-            Args: subsample_result (dict) - Return some metrics results into this dict. """
-
-        # Reconstruct all barcode sequences in the original matrices
-        barcode_whitelist = cr_utils.load_barcode_whitelist(molecule_counter.get_barcode_whitelist())
-        barcode_length = molecule_counter.get_barcode_length() or len(barcode_whitelist[0])
-
-        gem_groups = molecule_counter.get_gem_groups()
-        barcode_seqs = cr_utils.format_barcode_seqs(barcode_whitelist, gem_groups)
-
-        # Reconstruct Gene tuples from the molecule info ref columns
-        gene_ids = molecule_counter.get_ref_column('gene_ids')
-        genome_ids = molecule_counter.get_ref_column('genome_ids')
-        gene_names = molecule_counter.get_ref_column('gene_names')
-        gene_tuples = [cr_constants.Gene(gid, gname, None, None, None) for (gid, gname) in itertools.izip(gene_ids, gene_names)]
-        genes = cr_utils.split_genes_by_genomes(gene_tuples, genome_ids)
-
-        matrices = GeneBCMatrices(genome_ids, genes, barcode_seqs)
-
-        # Track results of subsampling
-        reads = 0
-
-        for mol in molecule_counter.get_molecule_iter(barcode_length, subsample_rate=subsample_rate):
-            matrices.add(mol.genome, mol.gene_id, mol.barcode)
-            reads += mol.reads
-
-        if subsample_result is not None:
-            subsample_result['mapped_reads'] = reads
-
-        return matrices
-
     def filter_barcodes(self, bcs_per_genome):
-        """ Return GeneBCMatrices containing only the specified barcodes.
-        Args: bcs_per_genome - dict of {genome: barcodes,...}
-        Returns: A new GeneBCMatrices object w/ the specified barcodes """
+        '''Return CountMatrix containing only the specified barcodes.
+        Args:
+            bcs_per_genome (dict of str to list): Maps genome to cell-associated barcodes.
+        Returns:
+            CountMatrix w/ the specified barcodes'''
 
-        filtered_matrices = GeneBCMatrices()
-        for (genome, matrix) in self.matrices.iteritems():
-            filtered_bcs = bcs_per_genome[genome]
-            filtered_matrix = matrix.select_barcodes_by_seq(filtered_bcs)
-            filtered_matrices.matrices[genome] = filtered_matrix
-        return filtered_matrices
+        # Union all the cell-associated barcodes
+        bcs = sorted(list(reduce(lambda a,x: a | set(x), bcs_per_genome.itervalues(), set())))
+        return self.select_barcodes_by_seq(bcs)
 
     def report_summary_json(self, filename, summary_json_paths, barcode_summary_h5_path,
                             recovered_cells, cell_bc_seqs):
-        """ summary_json_paths: paths to summary jsons containing total_reads and *_conf_mapped_reads_frac
+        '''summary_json_paths: paths to summary jsons containing total_reads and *_conf_mapped_reads_frac
             barcode_summary_h5_path: path to barcode summary h5 file
-        """
+        '''
         d = self.report(summary_json_paths,
                         barcode_summary_h5_path=barcode_summary_h5_path,
                         recovered_cells=recovered_cells,
@@ -843,28 +875,16 @@ class GeneBCMatrices:
         return os.path.join(base_path, "hdf5", "matrices.hdf5")
 
 def merge_matrices(h5_filenames):
-    matrices = None
+    matrix = None
     for h5_filename in h5_filenames:
-        if matrices is None:
-            matrices = GeneBCMatrices.load_h5(h5_filename)
+        if matrix is None:
+            matrix = CountMatrix.load_h5_file(h5_filename)
         else:
-            matrices.merge(h5_filename)
-    if matrices is not None:
-        matrices.tocsc()
-    return matrices
-
-def concatenate_mex_dirs(mex_dir_list, out_mex_dir):
-    if len(mex_dir_list) == 0:
-        return
-
-    # copy tree structure of first dir (assuming genomes, bcs and genes are the same across all chunks)
-    cr_utils.copytree(mex_dir_list[0], out_mex_dir)
-
-    # concatenate mtx for each genome
-    for genome_dir in os.listdir(out_mex_dir):
-        mtx_list = [os.path.join(base_dir, genome_dir, "matrix.mtx") for base_dir in mex_dir_list]
-        out_mtx = os.path.join(out_mex_dir, genome_dir, "matrix.mtx")
-        concatenate_mtx(mtx_list, out_mtx)
+            other = CountMatrix.load_h5_file(h5_filename)
+            matrix.merge(other)
+    if matrix is not None:
+        matrix.tocsc()
+    return matrix
 
 def concatenate_mtx(mtx_list, out_mtx):
     if len(mtx_list) == 0:
@@ -891,117 +911,69 @@ def concatenate_mtx(mtx_list, out_mtx):
                     in_file.readline()
                 shutil.copyfileobj(in_file, out_file)
 
-def concatenate_h5(h5_list, out_h5, extra_attrs={}):
-    if len(h5_list) == 0:
-        return
-
-    filters = tables.Filters(complevel = cr_constants.H5_COMPRESSION_LEVEL)
-    with tables.open_file(out_h5, mode = 'w', filters = filters) as f:
-        f.set_node_attr('/', cr_constants.H5_FILETYPE_KEY, MATRIX_H5_FILETYPE)
-
-        # set optional top-level attributes
-        for (k,v) in extra_attrs.iteritems():
-            f.set_node_attr('/', k, v)
-
-        # setup using first file as template
-        group_dsets = {}
-        group_shapes = {}
-
-        dtypes = cr_constants.H5_MATRIX_ATTRS
-        ext_attrs = ['data', 'indices']
-
-        with tables.open_file(h5_list[0], mode = 'r') as fin:
-            for in_group in fin.list_nodes(fin.root):
-                genome = in_group._v_name
-                out_group = f.create_group(f.root, genome)
-
-                dsets = {}
-
-                # copy static-size datasets
-                barcodes = getattr(in_group, 'barcodes').read()
-                dsets['barcodes'] = f.create_carray(out_group, 'barcodes', obj=barcodes)
-                genes = getattr(in_group, 'genes').read()
-                dsets['genes'] = f.create_carray(out_group, 'genes', obj=genes)
-                gene_names = getattr(in_group, 'gene_names').read()
-                dsets['gene_names'] = f.create_carray(out_group, 'gene_names', obj=gene_names)
-                indptr = getattr(in_group, 'indptr').read().astype(dtypes['indptr'])
-                dsets['indptr'] = f.create_carray(out_group, 'indptr', obj=indptr)
-                shape = [len(genes), len(barcodes), 0]
-
-                # initialize extendable datasets
-                for name in ext_attrs:
-                    atom = tables.Atom.from_dtype(np.dtype(dtypes[name]))
-                    dsets[name] = f.create_earray(out_group, name, atom, (0,))
-
-                group_dsets[genome] = dsets
-                group_shapes[genome] = shape
-
-        first_mat = True
-        for h5_file in h5_list:
-            with tables.open_file(h5_file, mode = 'r') as fin:
-                for in_group in fin.list_nodes(fin.root):
-                    genome = in_group._v_name
-                    shape = group_shapes[genome]
-                    dsets = group_dsets[genome]
-
-                    data = getattr(in_group, 'data').read()
-                    indices = getattr(in_group, 'indices').read()
-                    indptr = getattr(in_group, 'indptr').read()
-
-                    dsets['data'].append(data)
-                    dsets['indices'].append(indices)
-
-                    if not first_mat:
-                        # combine column pointers
-                        # since the set of nonzero columns in each chunk is disjoint, this is simple
-                        old_indptr = dsets['indptr'][:]
-                        dsets['indptr'][:] = old_indptr + indptr
-
-                    shape[2] += len(data)
-
-                first_mat = False
-
-        # set shape
-        for (genome, shape) in group_shapes.iteritems():
-            genes_bcs = np.array(shape[0:2], dtype=dtypes['shape'])
-            dsets = group_dsets[genome]
-            dsets['shape'] = f.create_carray('/' + genome, 'shape', obj=genes_bcs)
-
-        # sanity check dimensions
-        expected_cols = shape[1]
-        expected_nnz = shape[2]
-        assert dsets['indptr'].nrows == expected_cols + 1
-        assert dsets['indptr'][-1] == expected_nnz
-        assert dsets['data'].nrows == expected_nnz
-        assert dsets['indices'].nrows == expected_nnz
-
 def make_matrix_attrs_count(sample_id, gem_groups, chemistry):
     matrix_attrs = make_library_map_count(sample_id, gem_groups)
-    matrix_attrs[cr_constants.H5_CHEMISTRY_DESC_KEY] = chemistry
+    matrix_attrs[h5_constants.H5_CHEMISTRY_DESC_KEY] = chemistry
     return matrix_attrs
 
-def make_matrix_attrs_aggr(gem_group_index, chemistry):
-    matrix_attrs = make_library_map_aggr(gem_group_index)
-    matrix_attrs[cr_constants.H5_CHEMISTRY_DESC_KEY] = chemistry
-    return matrix_attrs
+def load_matrix_h5_metadata(filename):
+    '''Get matrix metadata attributes from an HDF5 file'''
+    # TODO: Consider moving these to the 'matrix' key instead of the root group
+    h5_version = CountMatrix.get_format_version_from_h5(filename)
+    if h5_version == 1:
+        return _load_matrix_legacy_v1_h5_metadata(filename)
+    else:
+        attrs = {}
+        with h5.File(filename, 'r') as f:
+            for key in h5_constants.H5_METADATA_ATTRS:
+                val = f.attrs.get(key)
+                if val is not None:
+                    if np.isscalar(val) and hasattr(val, 'item'):
+                        # Coerce numpy scalars to python types.
+                        # In particular, force np.unicode_ to unicode (python2)
+                        #    or str (python 3)
+                        attrs[key] = val.item()
+                    else:
+                        attrs[key] = val
+            return attrs
 
-def get_matrix_attrs(matrix_h5):
+# (needed for compatibility with v1 matrices)
+def _load_matrix_legacy_v1_h5_metadata(filename):
     attrs = {}
-    with tables.open_file(matrix_h5, 'r') as f:
-        for key in cr_constants.H5_METADATA_ATTRS:
-            try:
-                val = f.get_node_attr('/', key)
-                attrs[key] = val
-            except AttributeError:
-                pass
+    with tables.open_file(filename, 'r') as f:
+        all_attrs = f.get_node('/')._v_attrs
+        for key in h5_constants.H5_METADATA_ATTRS:
+            if hasattr(all_attrs, key):
+                val = getattr(all_attrs, key)
+                if np.isscalar(val) and hasattr(val, 'item'):
+                    # Coerce numpy scalars to python types.
+                    # In particular, force np.unicode_ to unicode (python2)
+                    #    or str (python 3)
+                    attrs[key] = val.item()
+                else:
+                    attrs[key] = val
     return attrs
+
+def load_matrix_h5_custom_attrs(filename):
+    '''Get matrix metadata attributes from an HDF5 file'''
+    h5_version = CountMatrix.get_format_version_from_h5(filename)
+    if h5_version == 1:
+        # no support for custom attrs in older versions
+        return {}
+
+    attrs = {}
+    with h5.File(filename, 'r') as f:
+        for key, val in f.attrs.items():
+            if key not in MATRIX_H5_BUILTIN_ATTRS:
+                attrs[key] = val
+        return attrs
 
 def make_library_map_count(sample_id, gem_groups):
     # store gem group mapping for use by Cell Loupe
     unique_gem_groups = sorted(set(gem_groups))
     library_map = {
-        cr_constants.H5_LIBRARY_ID_MAPPING_KEY: np.array([sample_id]*len(unique_gem_groups), dtype=str),
-        cr_constants.H5_ORIG_GEM_GROUP_MAPPING_KEY: np.array(unique_gem_groups, dtype=int)
+        h5_constants.H5_LIBRARY_ID_MAPPING_KEY: np.array([sample_id]*len(unique_gem_groups), dtype=str),
+        h5_constants.H5_ORIG_GEM_GROUP_MAPPING_KEY: np.array(unique_gem_groups, dtype=int)
     }
     return library_map
 
@@ -1009,23 +981,46 @@ def make_library_map_aggr(gem_group_index):
     # store gem group mapping for use by Cell Loupe
     library_ids = []
     original_gem_groups = []
-    for ng, (lid, og) in sorted(gem_group_index.iteritems()):
+    # Sort numerically by new gem group
+    for ng, (lid, og) in sorted(gem_group_index.iteritems(), key=lambda pair: int(pair[0])):
         library_ids.append(lid)
         original_gem_groups.append(og)
     library_map = {
-        cr_constants.H5_LIBRARY_ID_MAPPING_KEY: np.array(library_ids, dtype=str),
-        cr_constants.H5_ORIG_GEM_GROUP_MAPPING_KEY: np.array(original_gem_groups, dtype=int)
+        h5_constants.H5_LIBRARY_ID_MAPPING_KEY: np.array(library_ids, dtype=str),
+        h5_constants.H5_ORIG_GEM_GROUP_MAPPING_KEY: np.array(original_gem_groups, dtype=int)
     }
     return library_map
 
 def get_gem_group_index(matrix_h5):
     with tables.open_file(matrix_h5, mode = 'r') as f:
         try:
-            library_ids = f.get_node_attr('/', cr_constants.H5_LIBRARY_ID_MAPPING_KEY)
-            original_gem_groups = f.get_node_attr('/', cr_constants.H5_ORIG_GEM_GROUP_MAPPING_KEY)
+            library_ids = f.get_node_attr('/', h5_constants.H5_LIBRARY_ID_MAPPING_KEY)
+            original_gem_groups = f.get_node_attr('/', h5_constants.H5_ORIG_GEM_GROUP_MAPPING_KEY)
         except AttributeError:
             return None
     library_map = {}
     for ng, (lid, og) in enumerate(zip(library_ids, original_gem_groups), start=1):
         library_map[ng] = (lid, og)
     return library_map
+
+def inplace_csc_column_normalize_l2(X):
+    """perform in-place column L2-normalization of input matrix X
+    >>> import numpy as np
+    >>> import scipy.sparse as sp
+    >>> from sklearn.preprocessing import normalize
+    >>> a = np.arange(12, dtype='float').reshape((3, 4))
+    >>> b = sp.csc_matrix(a)
+    >>> inplace_csc_column_normalize_l2(b)
+    >>> np.all(normalize(a, axis=0) == b)
+    True
+    """
+    assert X.getnnz() == 0 or isinstance(X.data[0], (np.float32, float))
+    for i in xrange(X.shape[1]):
+        s = 0.0
+        for j in xrange(X.indptr[i], X.indptr[i + 1]):
+            s += X.data[j] * X.data[j]
+        if s == 0.0:
+            continue
+        s = np.sqrt(s)
+        for j in xrange(X.indptr[i], X.indptr[i + 1]):
+            X.data[j] /= s

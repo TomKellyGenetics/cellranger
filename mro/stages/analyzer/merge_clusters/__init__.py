@@ -10,11 +10,11 @@ import resource
 import sys
 from scipy.cluster.hierarchy import linkage
 import cellranger.analysis.clustering as cr_clustering
-import cellranger.analysis.io as cr_io
+import cellranger.analysis.io as analysis_io
 from cellranger.analysis.diffexp import compute_sseq_params, sseq_differential_expression
 import cellranger.analysis.graphclust as cr_graphclust
 from cellranger.analysis.singlegenome import SingleGenomeAnalysis
-from cellranger.matrix import GeneBCMatrices, GeneBCMatrix
+from cellranger.matrix import CountMatrix
 
 __MRO__ = """
 stage MERGE_CLUSTERS(
@@ -22,7 +22,6 @@ stage MERGE_CLUSTERS(
     in  h5   pca_h5,
     in  h5   clusters_h5,
     in  bool skip,
-    in  bool is_multi_genome,
     out h5   clusters_h5,
     out path clusters_csv,
     src py   "stages/analyzer/merge_clusters",
@@ -37,13 +36,14 @@ MERGE_CLUSTERS_DE_ADJ_P_THRESHOLD = 0.05
 MIN_DE_GENES = 1
 
 def split(args):
-    if args.skip or args.is_multi_genome:
-        return {'chunks': [{}]}
+    if args.skip:
+        return {'chunks': [{'__mem_gb': 1}]}
 
+    matrix_mem_gb = CountMatrix.get_mem_gb_from_matrix_h5(args.matrix_h5)
     return {
-        'chunks': [{}],
+        'chunks': [{'__mem_gb': 1}],
         'join': {
-            '__mem_gb': 2 * GeneBCMatrix.get_mem_gb_from_matrix_h5(args.matrix_h5),
+            '__mem_gb': max(6, matrix_mem_gb),
         }
     }
 
@@ -51,17 +51,13 @@ def main(args, outs):
     pass
 
 def join(args, outs, chunk_defs, chunk_outs):
-    if args.skip or args.is_multi_genome:
+    if args.skip:
         return
 
     np.random.seed(0)
 
     # Load the matrix
-    matrices = GeneBCMatrices.load_h5(args.matrix_h5)
-    if len(matrices.matrices) > 1:
-        print "Multiple genomes detected. Skipping stage."
-        return
-    mat = matrices.matrices.values()[0]
+    mat = CountMatrix.load_h5_file(args.matrix_h5)
     print mat.m.shape, mat.m.nnz
 
     barcodes = mat.bcs
@@ -166,7 +162,7 @@ def join(args, outs, chunk_defs, chunk_outs):
     final_labels[use_bcs] = labels
 
     # Save results
-    with cr_io.open_h5_for_writing(outs.clusters_h5) as f:
+    with analysis_io.open_h5_for_writing(outs.clusters_h5) as f:
         cr_graphclust.save_graphclust_h5(f, final_labels)
 
     clustering_key = cr_clustering.format_clustering_key(cr_clustering.CLUSTER_TYPE_GRAPHCLUST, 0)

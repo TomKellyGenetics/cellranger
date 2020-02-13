@@ -14,11 +14,13 @@ import numpy as np
 import sys
 import tenkit.safe_json as tk_safe_json
 import cellranger.analysis.clustering as cr_clustering
-import cellranger.analysis.singlegenome as cr_sg_analysis
-import cellranger.analysis.multigenome as cr_mg_analysis
+from cellranger.analysis.singlegenome import SingleGenomeAnalysis
+from cellranger.analysis.multigenome import MultiGenomeAnalysis
 import cellranger.constants as cr_constants
+import cellranger.library_constants as lib_constants
 import cellranger.reference as cr_reference
 import cellranger.report as cr_report
+import cellranger.rna.library as rna_library
 import cellranger.utils as cr_utils
 import cellranger.vdj.constants as vdj_constants
 import cellranger.vdj.report as vdj_report
@@ -27,15 +29,6 @@ import cellranger.webshim.constants.gex as ws_gex_constants
 import cellranger.webshim.constants.vdj as ws_vdj_constants
 from cellranger.webshim.data import SampleData
 import cellranger.webshim.template as template
-
-def max_norm(values):
-    min_value = min(values)
-    values = [v - min_value for v in values]
-
-    max_value = max(values)
-    if max_value > 0:
-        return [float(v) / float(max_value) for v in values]
-    return values
 
 def add_prefix(prefix, name):
     if '%s' in name:
@@ -48,7 +41,7 @@ def format_name(display_name, prefix, prefixes, prefix_format_func=None):
         prefix = prefix_format_func(prefix)
 
     # Default multi -> '' if no format func given
-    if prefix_format_func is None and prefix == cr_constants.MULTI_REFS_PREFIX:
+    if prefix_format_func is None and prefix == lib_constants.MULTI_REFS_PREFIX:
         prefix = ''
 
     if len(prefixes) > 1 or '%s' in display_name:
@@ -67,7 +60,7 @@ def format_description(description, prefix, prefixes, prefix_format_func=None):
         prefix = prefix_format_func(prefix)
 
     # Default multi -> '' if no format func given
-    if prefix_format_func is None and prefix == cr_constants.MULTI_REFS_PREFIX:
+    if prefix_format_func is None and prefix == lib_constants.MULTI_REFS_PREFIX:
         prefix = ''
 
     if '%s' in description:
@@ -97,19 +90,6 @@ def format_value(value, format_type):
         return format_type % float(value)
     raise Exception('Invalid format type: %s' % format_type)
 
-def get_sample_properties(sample_id, sample_desc, genomes, version, agg_batches=None):
-    sample_properties = {
-        'sample_id': sample_id,
-        'sample_desc': sample_desc,
-        'genomes': genomes,
-        'version': version,
-    }
-
-    if agg_batches:
-        sample_properties['agg_batches'] = agg_batches
-
-    return sample_properties
-
 def lookup_name(data, name):
     name_parts = name.split('/', 1)
     data = data.get(name_parts[0])
@@ -119,7 +99,9 @@ def lookup_name(data, name):
         return lookup_name(data, name_parts[1])
 
 def add_alarm(value, formatted_value, level, alarm_dict, alarms):
-    test = '%f %s' % (value, alarm_dict['test'])
+    # The numeric value may have become a string via JSON ('NaN', 'Infinity', '-Infinity')
+    # Note that by default python's json encoder outputs a bare NaN symbol which is even worse
+    test = 'float("%s") %s' % (str(value), alarm_dict['test'])
     raised = eval(test, {}, {})
     if raised:
         title = alarm_dict['title']
@@ -172,7 +154,9 @@ def add_table_rows(data, name, metric_dict, rows, style_func, target_func, prefi
             formatted_description = format_description(description, prefix, prefixes,
                                                        prefix_format_func=prefix_format_func)
             formatted_value = format_value(value, format_type)
+
             style = style_func(metric_dict, value)
+
             rows.append([
                 {
                     'v': formatted_name,
@@ -186,6 +170,7 @@ def add_table_rows(data, name, metric_dict, rows, style_func, target_func, prefi
                 {
                     'v': formatted_value,
                     's': style,
+                    'r': value,
                 },
             ])
             values.append(value)
@@ -289,25 +274,96 @@ def _plot_barcode_rank(chart, counts, num_cells):
 
     return chart
 
+def build_plot_data_dict(plot_segment, counts):
+    """
+    Construct the data for a plot segment by appropriately slicing the
+    counts
+    Inputs:
+    - plot_segment: BarcodeRankPlotSegment containing [start, end)
+        of the segment, the cell density and legend visibility option
+    - counts: Reverse sorted UMI counts for all barcodes.
+    """
+
+    start = max(0, plot_segment.start-1) # -1 for continuity between two charts
+    end = plot_segment.end
+    plot_rows = convert_numpy_array_to_line_chart(counts[start:end], int)
+    name = 'Cells' if plot_segment.cell_density > 0 else 'Background'
+
+    # Setup the tooltip
+    if plot_segment.cell_density > 0.:
+        n_barcodes = plot_segment.end - plot_segment.start
+        n_cells = int(round(plot_segment.cell_density * n_barcodes))
+        hover = "{:.0f}% Cells<br>({}/{})".format(100*plot_segment.cell_density, n_cells, n_barcodes)
+    else:
+        hover = "Background"
+
+    
+    data_dict = {
+        'x': [],
+        'y': [],
+        'name': name,
+        'hoverinfo': 'text',
+        'text': hover,
+        'type': 'scattergl',
+        'mode': 'lines',
+        'line': {
+            'color': shared_constants.BC_PLOT_CMAP(plot_segment.cell_density),
+            'width': shared_constants.BC_RANK_PLOT_LINE_WIDTH,
+        },
+        'showlegend': plot_segment.legend,
+    }
+    offset = 1 + start # it's a log-log plot, hence the 1
+    for index, count in plot_rows:
+        data_dict['x'].append(index + offset)
+        data_dict['y'].append(count)
+
+    # Handle case where the data is empty
+    if len(data_dict['x']) == 0:
+        data_dict['x'].append(0)
+        data_dict['y'].append(0)
+
+    return data_dict
+
+def _plot_counter_barcode_rank(chart, counts, plot_segments):
+    """
+    Generate the RNA counter barcode rank plot 
+    Inputs:
+        - chart: chart element to populate data
+        - counts: UMI counts reverse sorted
+        - plot_segments: A list of BarcodeRankPlotSegments
+    """
+
+    for segment in plot_segments:
+        chart['data'].append(build_plot_data_dict(segment, counts))
+
+    return chart
+    
 def plot_barcode_rank(chart, sample_properties, sample_data):
     """ Generate the RNA counter barcode rank plot """
-    if sample_properties.get('genomes') is None or sample_data.barcode_summary is None:
+    if sample_properties.get('genomes') is None or sample_data.barcode_summary is None or sample_data.cell_barcodes is None:
         return None
 
     if len(sample_properties['genomes']) == 0:
         return None
 
-    counts_per_bc = []
-    for genome in sample_properties['genomes']:
-        key = cr_utils.format_barcode_summary_h5_key(genome, cr_constants.TRANSCRIPTOME_REGION, cr_constants.CONF_MAPPED_DEDUPED_READ_TYPE)
-        if key in sample_data.barcode_summary:
-            counts_per_bc.append(sample_data.barcode_summary[key][:])
-        else:
-            # Not guaranteed to exist, depending on pipeline
-            return
-    counts_per_bc = np.concatenate(counts_per_bc)
+    # UMI counts per BC across all genomes present
+    if len(sample_properties['genomes']) > 1:
+        genome = lib_constants.MULTI_REFS_PREFIX
+    else:
+        genome = sample_properties['genomes'][0]
 
-    return _plot_barcode_rank(chart, counts_per_bc, sample_data.num_cells)
+    gex_prefix = rna_library.get_library_type_metric_prefix(lib_constants.GENE_EXPRESSION_LIBRARY_TYPE)
+    key = cr_utils.format_barcode_summary_h5_key(gex_prefix,
+                                                 genome,
+                                                 cr_constants.TRANSCRIPTOME_REGION,
+                                                 cr_constants.CONF_MAPPED_DEDUPED_READ_TYPE)
+
+    if key in sample_data.barcode_summary:
+        counts_per_bc, plot_segments = sample_data.counter_barcode_rank_plot_data(key)
+        return _plot_counter_barcode_rank(chart, counts_per_bc, plot_segments)
+    else:
+        # Not guaranteed to exist, depending on pipeline
+        pass
 
 
 def plot_vdj_barcode_rank(chart, sample_properties, sample_data):
@@ -411,9 +467,10 @@ def plot_histogram_metric(chart, sample_properties, sample_data, **kwargs):
     return chart
 
 
+
 def plot_barnyard_barcode_counts(chart, sample_properties, sample_data):
-    analysis = sample_data.analysis
-    if not isinstance(analysis, cr_mg_analysis.MultiGenomeAnalysis):
+    analysis = sample_data.get_analysis(MultiGenomeAnalysis)
+    if analysis is None:
         return None
 
     chart['data'] = []
@@ -452,31 +509,32 @@ def plot_barnyard_barcode_counts(chart, sample_properties, sample_data):
 
     return chart
 
-def plot_preprocess(analysis, sample_properties):
-    if analysis is None:
+def plot_preprocess(analyses, sample_properties):
+    if analyses is None or len(analyses) == 0:
         return None
-    if isinstance(analysis, cr_sg_analysis.SingleGenomeAnalysis) and analysis.is_zero_matrix():
+
+    sg_analyses = [an for an in analyses if isinstance(an, SingleGenomeAnalysis)]
+    sg_analysis = sg_analyses[0] if len(sg_analyses) > 0 else None
+    if sg_analysis is None or sg_analysis.is_zero_matrix():
         return None
-    if isinstance(analysis, cr_mg_analysis.MultiGenomeAnalysis):
-        return analysis
 
     # Limit the number of K-means clusterings displayed to limit the HTML filesize
     new_clusterings = {}
-    for key, clu in analysis.clusterings.iteritems():
+    for key, clu in sg_analysis.clusterings.iteritems():
         if not (clu.clustering_type == cr_clustering.CLUSTER_TYPE_KMEANS and \
                 clu.num_clusters > ws_gex_constants.MAX_WEBSHIM_KMEANS_K):
             new_clusterings[key] = clu
-    analysis.clusterings = new_clusterings
+    sg_analysis.clusterings = new_clusterings
 
-    return analysis
+    return analyses
 
 def load_sample_data(sample_properties, sample_data_paths):
     return SampleData(sample_properties, sample_data_paths, plot_preprocess)
 
 def plot_tsne(chart, sample_properties, sample_data):
     """ Plot cells in t-SNE space, colored by clustering label """
-    analysis = sample_data.analysis
-    if not analysis or len(sample_properties['genomes']) > 1 or not isinstance(analysis, cr_sg_analysis.SingleGenomeAnalysis):
+    analysis = sample_data.get_analysis(SingleGenomeAnalysis)
+    if analysis is None:
         return None
 
     args = [analysis.get_tsne().transformed_tsne_matrix,
@@ -573,11 +631,11 @@ def plot_dimensions_color(chart, transformed_matrix, values, description, vmin, 
 
 def plot_tsne_totalcounts(chart, sample_properties, sample_data):
     """ Plot cells colored by total counts """
-    analysis = sample_data.analysis
-    if not analysis or len(sample_properties['genomes']) > 1:
+    analysis = sample_data.get_analysis(SingleGenomeAnalysis)
+    if not analysis:
         return None
 
-    reads_per_bc = analysis.matrix.get_reads_per_bc()
+    reads_per_bc = analysis.matrix.get_counts_per_bc()
     vmin, vmax = np.percentile(reads_per_bc, ws_gex_constants.TSNE_TOTALCOUNTS_PRCT_CLIP)
 
     return plot_dimensions_color(chart, analysis.get_tsne().transformed_tsne_matrix,
@@ -613,7 +671,7 @@ def _plot_differential_expression(chart, analysis, clustering=None, diff_expr=No
         top_gene_indices = keep_indices[log2fcs[keep_indices].argsort()[::-1]][:n_genes]
 
         for j in top_gene_indices:
-            top_genes.add(analysis.matrix.int_to_gene_id(j))
+            top_genes.add(analysis.matrix.int_to_feature_id(j))
 
         cols.append({'type': 'number',
                      'label': 'L2FC',
@@ -624,8 +682,8 @@ def _plot_differential_expression(chart, analysis, clustering=None, diff_expr=No
 
     rows = []
     for gene_id in top_genes:
-        i = analysis.matrix.gene_id_to_int(gene_id)
-        gene_name = analysis.matrix.gene_id_to_name(gene_id)
+        i = analysis.matrix.feature_id_to_int(gene_id)
+        gene_name = analysis.matrix.feature_id_to_name(gene_id)
 
         row = [gene_id, gene_name]
         for j in xrange(n_clusters):
@@ -655,13 +713,11 @@ def _plot_differential_expression(chart, analysis, clustering=None, diff_expr=No
     return chart
 
 def plot_differential_expression(chart, sample_properties, sample_data):
-    return clustering_plot_func(chart, sample_properties, sample_data, _plot_differential_expression, [sample_data.analysis])
+    sg_analysis = sample_data.get_analysis(SingleGenomeAnalysis)
+    return clustering_plot_func(chart, sample_properties, sample_data, _plot_differential_expression, [sg_analysis])
 
 def clustering_plot_func(chart, sample_properties, sample_data, plot_func, args=[], kwargs={}):
-    if len(sample_properties['genomes']) > 1:
-        return None
-
-    analysis = sample_data.analysis
+    analysis = sample_data.get_analysis(SingleGenomeAnalysis)
     if analysis is None:
         return None
 
@@ -676,9 +732,14 @@ def clustering_plot_func(chart, sample_properties, sample_data, plot_func, args=
             new_charts.append(new_chart)
     return new_charts
 
-def make_chart_filters(sample_properties, analysis):
-    if analysis is None or len(sample_properties['genomes']) > 1 or not isinstance(analysis, cr_sg_analysis.SingleGenomeAnalysis):
+def make_chart_filters(sample_properties, analyses):
+    if analyses is None:
         return {}
+    sg_analyses = [an for an in analyses if isinstance(an, SingleGenomeAnalysis)]
+    if len(sg_analyses) == 0 or analyses[0] is None:
+        return {}
+    assert len(sg_analyses) == 1
+    analysis = sg_analyses[0]
 
     filter_values = map(lambda x: x.description, cr_clustering.sort_clusterings(analysis.clusterings.values()))
 
@@ -700,8 +761,21 @@ def plot_subsampled_scatterplot_metric(chart, sample_properties, sample_data, **
     """
     summary_data = sample_data.summary or {}
 
+    subsample_type = kwargs.get('subsample_type', 'raw_rpc')
+
+    # Just use ref_prefix if specified; otherwise try to construct it out of the set of references
+    if 'ref_prefix' in kwargs:
+        ref_prefix = kwargs['ref_prefix']
+    elif 'references' in kwargs:
+        references = kwargs['references']
+        ref_prefix = '(' + '|'.join(references) + ')_'
+    else:
+        ref_prefix = '(.+)_'
+
     # Regular expression to match <reference>_<subsample_type>_<subsample_depth>_<metric_suffix> pattern
-    metric_pattern = "^(.+)_(raw_rpc)_([0-9]+)_%s" % (kwargs.get("metric_suffix", None))
+    metric_pattern = '^%s(%s)_([0-9]+)_%s' % (ref_prefix,
+                                              subsample_type,
+                                              kwargs.get('metric_suffix', None))
 
     metric_search_results = [re.search(metric_pattern, key) for key in summary_data.keys()]
 
@@ -773,10 +847,11 @@ def plot_subsampled_scatterplot_metric(chart, sample_properties, sample_data, **
     chart['data'] = [v for k,v in sorted(traces.items())]
     return chart
 
-def build_charts(sample_properties, chart_dicts, sample_data, module=None):
+def build_charts(sample_properties, chart_dicts, sample_data,
+                 all_prefixes = {}, module=None):
     modules = [module, globals()] if module else [globals()]
 
-    filters = make_chart_filters(sample_properties, sample_data.analysis)
+    filters = make_chart_filters(sample_properties, sample_data.analyses)
 
     charts = []
     for chart_dict in chart_dicts:
@@ -786,7 +861,15 @@ def build_charts(sample_properties, chart_dicts, sample_data, module=None):
             f = module.get(function)
             if f is not None:
                 break
+
+        if function is not None and f is None:
+            raise ValueError('Could not find webshim chart function "%s"' % function)
+
         kwargs = chart_dict.pop('kwargs', {})
+
+        kwargs_prefixes = chart_dict.pop('kwargs_prefixes', [])
+        for prefix in kwargs_prefixes:
+            kwargs[prefix] = all_prefixes[prefix]
 
         new_chart_obj = f(chart_dict, sample_properties, sample_data, **kwargs)
         if new_chart_obj is None:
@@ -797,22 +880,98 @@ def build_charts(sample_properties, chart_dicts, sample_data, module=None):
 
     return charts, filters
 
+def filter_vdj_prefixes(all_prefixes, sample_properties):
+    """ Only get subset of metric prefix values """
+    chain_filter = sample_properties.get('chain_type')
+    if chain_filter is None:
+        return all_prefixes
 
-def get_constants_for_pipeline(pipeline):
+    # NOTE: Assumes chains (TRA, TRB, etc) are prefixed with the chain_type (TR or IG)
+    result = {}
+    for key, values in all_prefixes.iteritems():
+        # Only filter any prefix that is a candidate for filtering
+        # (i.e., contains some values prefixed by the selected chain type)
+        if values is not None and \
+           any(v.startswith(chain_filter) for v in values):
+            result[key] = [v for v in values if v.startswith(chain_filter) or v == lib_constants.MULTI_REFS_PREFIX]
+        else:
+            result[key] = values
+    return result
+
+
+def filter_vdj_alarms(all_alarms, sample_properties):
+    """ Only get subset of metric alarms """
+    chain_filter = sample_properties.get('chain_type')
+    if chain_filter is None:
+        return all_alarms
+
+    result = []
+    for alarm in all_alarms:
+        # No filters specified; don't filter
+        if 'filters' not in alarm:
+            result.append(alarm)
+            continue
+
+        for f in alarm['filters']:
+            if f.get('chain_type') == chain_filter:
+                result.append(alarm)
+
+    return result
+
+
+def get_constants_for_pipeline(pipeline, sample_properties):
+    """ Get the appropriate metrics/alarms/charts for a pipeline """
     if pipeline == shared_constants.PIPELINE_VDJ:
         metrics, alarms, charts = ws_vdj_constants.METRICS, ws_vdj_constants.METRIC_ALARMS, ws_vdj_constants.CHARTS
-        metric_prefixes = vdj_report.VdjReporter().get_all_prefixes()
+
+        metric_prefixes = filter_vdj_prefixes(vdj_report.VdjReporter().get_all_prefixes(),
+                                              sample_properties)
+
+        alarms = filter_vdj_alarms(alarms, sample_properties)
+
     else:
         metrics, alarms, charts = ws_gex_constants.METRICS, ws_gex_constants.METRIC_ALARMS, ws_gex_constants.CHARTS
+
         metric_prefixes = cr_report.Reporter().get_all_prefixes()
 
     return metrics, alarms, charts, metric_prefixes
 
 
+def get_custom_features(sample_data):
+    """Infer the set of distinct custom feature types present in a dataset"""
+    # Add the "custom feature type" prefix using the sample data
+    analysis = sample_data.get_analysis(SingleGenomeAnalysis)
+
+    # Adding a dummy value here suppresses extraneous web summary dashboards
+    custom_features = ['dummy']
+
+    if analysis:
+        feature_ref = analysis.matrix.feature_ref
+        feature_types = set(f.feature_type for f in feature_ref.feature_defs)
+        custom_features.extend(sorted(list(feature_types - set(rna_library.RECOGNIZED_FEATURE_TYPES))))
+    return custom_features
+
+def get_genomes(sample_data):
+    """Infer the set of genomes present in a dataset"""
+
+    analysis = sample_data.get_analysis(SingleGenomeAnalysis)
+    if analysis:
+        feature_ref = analysis.matrix.feature_ref
+        genomes = set(f.tags.get('genome', u'') for f in feature_ref.feature_defs)
+        return list(genomes - set(['']))
+    else:
+        return ['dummy']
+
+
 def build_web_summary_json(sample_properties, sample_data, pipeline):
+    """ sample_properties - dict
+        sample_data - *SampleData class
+        pipeline - string """
     view = copy.deepcopy(sample_properties)
 
-    metrics, alarms, charts, all_prefixes = get_constants_for_pipeline(pipeline)
+    metrics, alarms, charts, all_prefixes = get_constants_for_pipeline(pipeline, sample_properties)
+
+    all_prefixes['custom_features'] = get_custom_features(sample_data)
 
     tables, alarms = build_tables(sample_properties, metrics, alarms, sample_data, all_prefixes=all_prefixes)
     if tables:
@@ -820,8 +979,9 @@ def build_web_summary_json(sample_properties, sample_data, pipeline):
     if alarms:
         view['alarms'] = alarms
 
-    charts, filters = build_charts(sample_properties, charts,
-                                   sample_data=sample_data)
+    all_prefixes['references'] = list(set(all_prefixes['references'] + get_genomes(sample_data)))
+
+    charts, filters = build_charts(sample_properties, charts, sample_data, all_prefixes=all_prefixes)
     if charts:
         view['charts'] = charts
     if filters:
@@ -899,7 +1059,9 @@ def build_web_summary_html(filename, sample_properties, sample_data, pipeline,
 
 
 def build_metrics_summary_csv(filename, sample_properties, sample_data, pipeline):
-    metrics, alarms, charts, all_prefixes = get_constants_for_pipeline(pipeline)
+    metrics, alarms, charts, all_prefixes = get_constants_for_pipeline(pipeline, sample_properties)
+
+    all_prefixes['custom_features'] = get_custom_features(sample_data)
 
     tables, _ = build_tables(sample_properties, metrics, alarms, sample_data, all_prefixes=all_prefixes)
     if not tables:
@@ -919,7 +1081,7 @@ def build_metrics_summary_csv(filename, sample_properties, sample_data, pipeline
                 csv_metrics[metric] = value
 
     with open(filename, 'wb') as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, lineterminator='\n')
         writer.writerow(csv_metrics.keys())
         writer.writerow(csv_metrics.values())
 

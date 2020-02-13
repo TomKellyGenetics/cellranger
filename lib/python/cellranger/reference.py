@@ -13,11 +13,13 @@ import os
 import subprocess
 import sys
 import re
+import tenkit.log_subprocess as tk_subproc
 import tenkit.safe_json as tk_safe_json
 import tenkit.seq as tk_seq
 import tenkit.bam as tk_bam
 import cellranger.constants as cr_constants
-import cellranger.utils as cr_utils
+import cellranger.h5_constants as h5_constants
+import cellranger.io as cr_io
 
 class GtfParser:
     GTF_ERROR_TXT = 'Please fix your GTF and start again.'
@@ -193,7 +195,11 @@ class ReferenceBuilder(GtfParser):
         print "...done\n"
 
         print "Computing hash of genome FASTA file..."
-        fasta_hash = cr_utils.compute_hash_of_file(new_genome_fasta)
+        fasta_hash = cr_io.compute_hash_of_file(new_genome_fasta)
+        print "...done\n"
+
+        print "Indexing genome FASTA file..."
+        subprocess.check_call(["samtools", "faidx", new_genome_fasta])
         print "...done\n"
 
         print "Writing genes GTF file into reference folder..."
@@ -203,7 +209,7 @@ class ReferenceBuilder(GtfParser):
         print "...done\n"
 
         print "Computing hash of genes GTF file..."
-        gtf_hash = cr_utils.compute_hash_of_file(new_gene_gtf)
+        gtf_hash = cr_io.compute_hash_of_file(new_gene_gtf)
         print "...done\n"
 
         print "Writing genes index file into reference folder (may take over 10 minutes for a 3Gb genome)..."
@@ -265,7 +271,7 @@ class ReferenceBuilder(GtfParser):
                                 line = '>' + genome_prefix + '_' + line[1:]
                             f.write(line + '\n')
         else:
-            cr_utils.copy(self.in_fasta_fns[0], out_fasta_fn)
+            cr_io.copy(self.in_fasta_fns[0], out_fasta_fn)
 
     def write_genome_gtf(self, out_gtf_fn):
         with open(out_gtf_fn, 'wb') as f:
@@ -302,9 +308,11 @@ class ReferenceBuilder(GtfParser):
                     row[8] = self.format_properties_dict(properties)
 
                     writer.writerow(row)
-                print "WARNING: The following transcripts appear on multiple chromosomes in the GTF:"
-                print '\n'.join(list(cross_chrom_transcripts)) + '\n'
-                print "This can indicate a problem with the reference or annotations. Only the first chromosome will be counted."
+
+                if len(cross_chrom_transcripts) > 0:
+                    print "WARNING: The following transcripts appear on multiple chromosomes in the GTF:"
+                    print '\n'.join(list(cross_chrom_transcripts)) + '\n'
+                    print "This can indicate a problem with the reference or annotations. Only the first chromosome will be counted."
 
     def write_genome_gene_index(self, out_pickle_fn, in_gtf_fn, in_fasta_fn):
         gene_index = GeneIndex(in_gtf_fn, in_fasta_fn)
@@ -416,25 +424,11 @@ class GeneIndex(GtfParser):
             return self.gene_ids_map[gene_id]
         return None
 
-    def gene_id_to_name(self, gene_id):
-        if gene_id in self.gene_ids_map:
-            i = self.gene_ids_map[gene_id]
-            return self.genes[i].name
-        return None
-
-    def int_to_gene_id(self, i):
-        if i < len(self.genes):
-            return self.genes[i].id
-        return None
-
     def get_genes(self):
         return self.genes
 
     def get_gene(self, gene_id):
         return self.genes[self.gene_id_to_int(gene_id)]
-
-    def get_gene_ids(self):
-        return [gene.id for gene in self.genes]
 
     def get_gene_lengths(self):
         return [gene.length for gene in self.genes]
@@ -510,7 +504,7 @@ class STAR:
         if chr_bin_n_bits is not None:
             args += ['--genomeChrBinNbits', str(chr_bin_n_bits)]
 
-        subprocess.check_call(args)
+        tk_subproc.check_call(args)
 
     def align(self, read1_fastq_fn, read2_fastq_fn,
               out_genome_bam_fn,
@@ -525,11 +519,10 @@ class STAR:
 
         args = [
             'STAR', '--genomeDir', self.reference_star_path,
-            '--readFilesIn', read1_fastq_fn, read2_fastq_fn,
             '--outSAMmultNmax', str(max_report_alignments_per_read),
             '--runThreadN', str(threads),
             '--readNameSeparator', 'space',
-            '--outSAMunmapped', 'Within',
+            '--outSAMunmapped', 'Within', 'KeepPairs',
             '--outSAMtype', 'SAM',
             '--outStd', 'SAM',
             '--outSAMorder', 'PairedKeepInputOrder',
@@ -539,61 +532,92 @@ class STAR:
             args.append('--outSAMattrRGline')
             args.extend(read_group_tags)
 
+        args.append('--readFilesIn')
+        if read1_fastq_fn.endswith(h5_constants.GZIP_SUFFIX):
+            args.append('<(gzip -c -d \'%s\')' % read1_fastq_fn)
+            if read2_fastq_fn:
+                args.append('<(gzip -c -d \'%s\')' % read2_fastq_fn)
+
+        elif read1_fastq_fn.endswith(h5_constants.LZ4_SUFFIX):
+            args.append('<(lz4 -c -d \'%s\')' % read1_fastq_fn)
+            if read2_fastq_fn:
+                args.append('<(lz4 -c -d \'%s\')' % read2_fastq_fn)
+
+        else:
+            args.append(read1_fastq_fn)
+            if read2_fastq_fn:
+                args.append(read2_fastq_fn)
+
         if out_genome_bam_fn == cr_constants.BAM_FILE_STREAM:
             # stream to pipe for downstream processing
             # NOTE: this feature is unused in the standard pipeline
             # HACK: see https://github.com/pysam-developers/pysam/issues/355
             parent_read, child_write = os.pipe()
             try:
-                subprocess.Popen(args, stdout=child_write)
+                tk_subproc.Popen(args, stdout=child_write)
             finally:
                 os.close(child_write)
             os.dup2(parent_read, sys.stdin.fileno())
             # now streaming output can be read using pysam.Samfile('-', 'r')
             # NOTE: since this does not await termination of the process, we can't reliably check the return code
         else:
-            star = subprocess.Popen(args, stdout=subprocess.PIPE, cwd=cwd)
+            # NOTE: We'd like to pipe fastq files through a decompressor and feed those
+            # streams into STAR.
+            # STAR provides --readFilesCommand which will do this. But it uses a named pipe which
+            # breaks on some filesystems.
+
+            # We could also use anonymous pipes but we'd need a way to refer to them
+            # on the command line and apparently not all systems support the same
+            # /dev/fdN or procfs-like paths.
+
+            # So we're forced to use the shell and process subsitution, as is recommended
+            # here: https://groups.google.com/forum/#!msg/rna-star/MQdL1WxkAAw/eG6EatoOCgAJ
+
+            # Wrap arguments in single quotes
+            quoted_args = []
+            for arg in args:
+                if arg.startswith('<'):
+                    # We want the shell to interpret this as a process substitution
+                    quoted_args.append(arg)
+
+                elif "'" in arg:
+                    # We can't escape single quotes within single quoted strings.
+                    # But we can concatenate different quoting mechanisms.
+                    # ' => '"'"'
+                    # This is relevant if the RG string contains quotes, which
+                    # can happen if the user specifies such a library name.
+                    arg = arg.replace("'", "'\"'\"'")
+                    quoted_args.append("'%s'" % arg)
+
+                else:
+                    # Normal argument
+                    quoted_args.append("'%s'" % arg)
+
+            star_cmd = ' '.join(quoted_args)
+
+            star = tk_subproc.Popen(star_cmd, stdout=subprocess.PIPE, cwd=cwd, shell=True, executable='bash')
             star_log = os.path.join(cwd, 'Log.out')
 
             with open(out_genome_bam_fn, 'w') as f:
                 view_cmd = ['samtools', 'view', '-Sb', '-']
-                view = subprocess.Popen(view_cmd, stdin=star.stdout, stdout=f, cwd=cwd)
+                view = tk_subproc.Popen(view_cmd, stdin=star.stdout, stdout=f, cwd=cwd)
                 view.communicate()
 
             try:
                 # Ensure that STAR process terminated so we can get a returncode
                 star.communicate()
-                cr_utils.check_completed_process(star, args[0])
+                cr_io.check_completed_process(star, args[0])
 
                 # check samtools status
-                cr_utils.check_completed_process(view, ' '.join(view_cmd))
+                cr_io.check_completed_process(view, ' '.join(view_cmd))
 
-            except cr_utils.CRCalledProcessError as e:
+            except cr_io.CRCalledProcessError as e:
                 # Give the user the path to STAR's log
-                raise cr_utils.CRCalledProcessError(e.msg + ' Check STAR logs for errors: %s .' % star_log)
+                raise cr_io.CRCalledProcessError(e.msg + ' Check STAR logs for errors: %s .' % star_log)
 
             # check for empty BAM
             if tk_bam.bam_is_empty(out_genome_bam_fn):
                 raise Exception('Aligned BAM is empty - check STAR logs for errors: %s .' % star_log )
-
-# TODO these next two methods are coupled, we should make a class
-def get_genome_index(genomes):
-    return {g: i for i, g in enumerate(genomes)}
-
-def get_genome_id(genome_name, genome_index):
-    none_genome_id = len(genome_index)
-    if genome_name is None:
-        return none_genome_id
-    elif genome_name in genome_index:
-        return genome_index[genome_name]
-    else:
-        raise Exception('Genome %s not found in index' % genome_name)
-
-def int_to_gene_id(i, gene_ids):
-    ''' Same as the GeneIndex method, but operates on a plain array. '''
-    if i < len(gene_ids):
-        return gene_ids[i]
-    return None
 
 def get_ref_name_from_genomes(genomes):
     return '_and_'.join(genomes)

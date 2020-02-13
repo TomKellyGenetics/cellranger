@@ -5,8 +5,9 @@
 import csv
 import numpy as np
 import os
+import six
 import tables
-import cellranger.constants as cr_constants
+import cellranger.h5_constants as h5_constants
 
 # Version for HDF5 format
 VERSION_KEY = 'version'
@@ -24,6 +25,11 @@ def save_h5(f, group, key, namedtuple):
     subgroup = f.create_group(group, '_'+key)
     for field in namedtuple._fields:
         arr = getattr(namedtuple, field)
+
+        # XML encode strings so we can store them as HDF5 ASCII
+        if isinstance(arr, six.string_types):
+            arr = np.string_(arr.encode('ascii', 'xmlcharrefreplace'))
+
         if not hasattr(arr, 'dtype'):
             raise ValueError('%s/%s must be a numpy array or scalar' % (group,key))
 
@@ -39,7 +45,7 @@ def save_h5(f, group, key, namedtuple):
 
 def save_matrix_csv(filename, arr, header, prefixes):
     with open(filename, 'wb') as f:
-        writer = csv.writer(f)
+        writer = csv.writer(f, lineterminator='\n')
         writer.writerow(header)
         # Iterate over the given arr, default iteration is by-row
         for i, v in enumerate(arr):
@@ -91,5 +97,5 @@ def combine_h5_files(in_files, out_file, groups):
         fin.close()
 
 def open_h5_for_writing(filename):
-    filters = tables.Filters(complevel = cr_constants.H5_COMPRESSION_LEVEL)
+    filters = tables.Filters(complevel = h5_constants.H5_COMPRESSION_LEVEL)
     return tables.open_file(filename, 'w', filters = filters)

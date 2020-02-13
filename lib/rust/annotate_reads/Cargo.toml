@@ -1,0 +1,24 @@
+[package]
+name = "annotate_reads"
+version = "0.1.0"
+authors = ["Matt Sooknah <matt.sooknah@10xgenomics.com>"]
+
+[dependencies]
+itertools = "0.4"
+docopt = "*"
+time = "*"
+log = "*"
+num = "*"
+rand = "0.5"
+csv = "1.0"
+histogram = "*"
+serde = "1.0"
+serde_derive = "1.0"
+serde_json = "1.0"
+bincode = "*"
+flate2 = "*"
+bitflags = "1"
+bio = ">=0.22"
+lz4 = "*"
+failure = "*"
+rust-htslib = ">=0.21"

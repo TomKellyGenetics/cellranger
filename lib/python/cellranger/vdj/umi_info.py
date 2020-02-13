@@ -9,6 +9,7 @@ import tables
 UMI_INFO_COLS = {
     'barcode_idx': np.uint32,
     'chain_idx': np.uint32,
+    'umi_idx': np.uint32,
     'reads': np.uint32,
 }
 

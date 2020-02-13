@@ -13,24 +13,40 @@ import cellranger.align as cr_align
 from cellranger.vdj.constants import (VDJ_5U_FEATURE_TYPES, VDJ_D_FEATURE_TYPES,
                                       VDJ_V_FEATURE_TYPES, VDJ_J_FEATURE_TYPES,
                                       VDJ_C_FEATURE_TYPES, VDJ_ORDERED_REGIONS,
-                                      START_CODONS, STOP_CODONS, CODON_TO_AA,
+                                      START_CODONS, STOP_CODONS, CODON_TO_AA, AMBIGUOUS_AA_CODE,
                                       VDJ_MAX_CDR3_LEN, VDJ_MIN_CDR3_LEN,
+                                      VDJ_CDR3_ALL_END_MOTIFS, VDJ_CDR3_COMMON_END_MOTIFS,
                                       VDJ_ANNOTATION_MIN_SCORE_RATIO,
                                       VDJ_ANNOTATION_MIN_WORD_SIZE,
                                       VDJ_ANNOTATION_MATCH_SCORE,
                                       VDJ_ANNOTATION_MISMATCH_PENALTY,
                                       VDJ_ANNOTATION_GAP_OPEN_PENALTY,
                                       VDJ_ANNOTATION_EXTEND_PENALTY,
+                                      VDJ_ANNOTATION_MIN_V_OVERLAP_FRAC,
                                       VDJ_PRIMER_ANNOTATION_MIN_FRACTION_MATCHED,
                                       VDJ_QUAL_OFFSET, VDJ_CLONOTYPE_TYPES,
                                       VDJ_GENE_PAIRS)
-from cellranger.constants import MULTI_REFS_PREFIX
+from cellranger.library_constants import MULTI_REFS_PREFIX
 import cellranger.vdj.reference as vdj_reference
 import cellranger.vdj.utils as vdj_utils
 import tenkit.safe_json as tk_safe_json
 import tenkit.stats as tk_stats
 import tenkit.seq as tk_seq
 from collections import defaultdict
+
+# Allow the start codon to shift up or down by this many codons
+START_CODON_SLOP = 1
+
+def codon_to_aa(codon):
+    """ Return amino acid corresponding to a codon
+
+    If the codon is not in the translation table, a default
+    AA is returned (see AMBIGUOUS_AA_CODE in vdj.constants)
+
+    """
+    assert len(codon)==3
+    assert all([c in 'NACGT' for c in codon])
+    return CODON_TO_AA.get(codon, AMBIGUOUS_AA_CODE)
 
 def filter_alignment(alignment_result, score_ratio, word_size,
                      match_score=VDJ_ANNOTATION_MATCH_SCORE):
@@ -55,6 +71,38 @@ def filter_alignment(alignment_result, score_ratio, word_size,
         return False
 
     if cr_align.get_max_word_length(alignment) < word_size:
+        return False
+
+    return True
+
+def filter_v_alignment(alignment_result, score_ratio,
+                       match_score=VDJ_ANNOTATION_MATCH_SCORE,
+                       v_overlap_frac=VDJ_ANNOTATION_MIN_V_OVERLAP_FRAC):
+    """Returns True for a passing alignment and False otherwise.
+
+    Args:
+    - alignment_result (SSWAlignmentResult): alignment result to filter
+    - score_ratio: minimum (score / max_possible_score)
+    - match_score: match score used in the alignment
+    - v_overlap_frac: Minimum required V gene overlap (alignment length/V gene length)
+
+    Returns:
+        True if alignment passed filters
+    """
+    v_gene_length = len(alignment_result.reference.metadata['feature'].sequence)
+
+    alignment = alignment_result.alignment
+
+    # alignment is a PyAlignRes object. Ends are inclusive.
+    alignment_length = float(alignment.query_end - alignment.query_begin + 1)
+
+    max_score = alignment_length * match_score
+    if tk_stats.robust_divide(alignment.score, max_score) < score_ratio:
+        return False
+
+    ref_alignment_length = float(alignment.ref_end - alignment.ref_begin + 1)
+    min_alignment_length = v_overlap_frac * v_gene_length
+    if ref_alignment_length < min_alignment_length:
         return False
 
     return True
@@ -119,7 +167,10 @@ def setup_feature_aligners(reference_path, score_ratios, word_sizes, use_feature
         # lambda's variables are resolved when lambda is called.
         # Need to use default arguments, because the default arguments will be evaluated
         # when the lambda is created not when it's called.
-        feature_filter_params = lambda x, score=score, word=word, match=match: filter_alignment(x, score, word, match)
+        if region_types == VDJ_V_FEATURE_TYPES:
+            feature_filter_params = lambda x, score=score, match=match: filter_v_alignment(x, score, match)
+        else:
+            feature_filter_params = lambda x, score=score, word=word, match=match: filter_alignment(x, score, word, match)
 
         aligners.append(feature_aligner)
         filters.append(feature_filter_params)
@@ -199,6 +250,28 @@ def collect_annotations(aligner, ref_seq, seq, filter_func):
     return annotations
 
 
+def find_cdr3_end_motif(j_amino_acids, allowed_end_motifs):
+    """Search for the CDR3 end motif in J amino acid sequence.
+
+    Args:
+    - j_amino_acids: the AA of the J region
+    - allowed_end_motifs: prioritized list of allowed end motifs. See VDJ_CDR3_ALL_END_MOTIFS
+        for the exhaustive list
+
+    Returns:
+    - end_motif_pos: Index of the end motif in j_amino_acids
+    """
+
+    for motif in allowed_end_motifs:
+        assert motif in VDJ_CDR3_ALL_END_MOTIFS
+        for idx in range(len(j_amino_acids) - len(motif) + 1):
+            valid_end = True
+            for i, aa in enumerate(motif):
+                valid_end = valid_end and (j_amino_acids[idx+i] == aa or aa == 'X')
+            if valid_end:
+                return idx
+    return None
+
 def search_cdr3_signature(seq, v_region, j_region, v_frame):
     """Search for the CDR3 signature in a sequence.
 
@@ -226,7 +299,7 @@ def search_cdr3_signature(seq, v_region, j_region, v_frame):
     v_start = v_region.contig_match_start
 
     # Get the position of the last Cysteine within the V-Region
-    v_amino_acids = [CODON_TO_AA[v_seq[i:(i+3)]] for i in range(v_frame, len(v_seq) - 3, 3)]
+    v_amino_acids = [codon_to_aa(v_seq[i:(i+3)]) for i in range(v_frame, len(v_seq) - 2, 3)]
     if not 'C' in v_amino_acids:
         flag = 'GUIDED_NO_C_IN_V'
         return (pos, flag)
@@ -255,22 +328,20 @@ def search_cdr3_signature(seq, v_region, j_region, v_frame):
     j_frame = 3 - (j_start - v_start - v_frame) % 3
     if j_frame == 3:
         j_frame = 0
-    j_amino_acids = [CODON_TO_AA[j_seq[i:(i+3)]] for i in range(j_frame, len(j_region.sequence) - 3, 3)]
+    j_amino_acids = [codon_to_aa(j_seq[i:(i+3)]) for i in range(j_frame, len(j_region.sequence) - 2, 3)]
 
     # Look for FG(X)G signature or WG(X)G signature
-    fgxg_pos = None
-    for idx in range(len(j_amino_acids) - 3):
-        if (j_amino_acids[idx] == 'F' or j_amino_acids[idx] == 'W') and \
-            j_amino_acids[idx + 1] == 'G' and j_amino_acids[idx + 3] == 'G':
-            # The CDR3 includes the first F of the signature
-            fgxg_pos = j_start + j_frame + idx * 3 + 3
-            break
+    end_motif_pos = None
+    end_motif_idx = find_cdr3_end_motif(j_amino_acids, VDJ_CDR3_ALL_END_MOTIFS)
+    if end_motif_idx is not None:
+        # The CDR3 includes the first AA of the signature
+        end_motif_pos = j_start + j_frame + end_motif_idx * 3 + 3
 
-    if not fgxg_pos:
+    if not end_motif_pos:
         flag = 'GUIDED_NO_FGXG'
 
-    if fgxg_pos and last_c_pos < fgxg_pos:
-        return ((last_c_pos, fgxg_pos), flag)
+    if end_motif_pos and last_c_pos < end_motif_pos:
+        return ((last_c_pos, end_motif_pos), flag)
 
     return (None, flag)
 
@@ -286,14 +357,18 @@ def search_cdr3_signature_no_vj(seq, v_region=None, j_region=None):
     min_cdr3_aas = VDJ_MIN_CDR3_LEN / 3
 
     for frame in range(3):
-        amino_acids = [CODON_TO_AA.get(seq[i:(i+3)],'') for i in range(frame, len(seq), 3)]
+        amino_acids = [codon_to_aa(seq[i:(i+3)]) for i in range(frame, len(seq) - 2, 3)]
 
         fgxg_idx = None
 
         for idx in range(min_cdr3_aas, len(amino_acids) - 3):
             # First try to find the end motif
-            if (amino_acids[idx] == 'F' or amino_acids[idx] == 'W') and \
-                amino_acids[idx + 1] == 'G' and amino_acids[idx + 3] == 'G':
+            for motif in VDJ_CDR3_COMMON_END_MOTIFS:
+                valid_end = True
+                for i, aa in enumerate(motif):
+                    valid_end = valid_end and (amino_acids[idx+i] == aa or aa == 'X')
+
+            if valid_end:
                 # The CDR3 includes the first F of the signature
                 fgxg_idx = idx
                 fgxg_pos = frame + fgxg_idx * 3
@@ -498,12 +573,17 @@ class AnnotatedContig(object):
         return (chain, cdr_seq)
 
     def has_full_length_vj_hit(self):
-        has_full_len_v_hit = any([annotation.feature.region_type in VDJ_V_FEATURE_TYPES and \
-                                  annotation.annotation_match_start == 0 for annotation in self.annotations])
+        has_full_len_v_hit = any([annotation.feature.region_type in VDJ_V_FEATURE_TYPES for annotation in self.annotations])
+
+        # The -3 allows for slop on the 3' end of J in the face of alignment clipping
         has_full_len_j_hit = any([annotation.feature.region_type in VDJ_J_FEATURE_TYPES  and
-                                  annotation.annotation_match_end >= annotation.annotation_length - 2 \
+                                  annotation.annotation_match_end >= annotation.annotation_length - 3 \
                                   for annotation in self.annotations])
         return has_full_len_v_hit and has_full_len_j_hit
+
+    def spans_v_start(self):
+        return any([annotation.feature.region_type in VDJ_V_FEATURE_TYPES and \
+            annotation.annotation_match_start == 0 for annotation in self.annotations])
 
     def get_vj_quals(self):
         if self.quals is None:
@@ -755,6 +835,8 @@ class AnnotatedContig(object):
         self.productive = None
         self.aa_sequence = None
 
+        flags = []
+
         if len(v_regions) == 1 and len(j_regions) == 1:
             # First try to search in an annotation-guided way
             v_region = v_regions[0]
@@ -769,25 +851,49 @@ class AnnotatedContig(object):
                 # Full V and V begins with a start codon (because it's an L-REGION+V-REGION).
                 # Force the frame to 0.
                 # Search for a CDR3 in frame 0.
-                (cdr_pos, self.cdr3_flag) = search_cdr3_signature(seq, v_region, j_region, 0)
+                (cdr_pos, flag) = search_cdr3_signature(seq, v_region, j_region, 0)
+                flags.append(flag)
+                flags.append('FULL_V_HAS_START')
                 self.start_codon_pos = v_start
 
-            else:
+            elif has_v_start:
+                # Full V but the first annotated codon is not a start.
+                # Look for an alternative start nearby that preserves the V frame.
+                for i in xrange(v_start - 3*START_CODON_SLOP, 1+v_start+3*START_CODON_SLOP, 3):
+                    if i > 0 and (i+3) <= len(seq) and seq[i:(i+3)] in START_CODONS:
+                        (cdr_pos, flag) = search_cdr3_signature(seq, v_region, j_region, 0)
+                        self.start_codon_pos = i
+                        flags.append(flag)
+                        flags.append('FULL_V_ALT_START')
+                if self.start_codon_pos is None:
+                    flags.append('FULL_V_NO_START')
+
+            if not has_v_start or self.start_codon_pos is None:
+                # Either we don't contain the start of V or we didn't find a valid start codon above
                 # Look for a CDR3 sequence in all frames
                 cdr_pos = None
 
                 for frame in [0, 1, 2]:
-                    ((cdr_pos), self.cdr3_flag) = search_cdr3_signature(seq, v_region, j_region, frame)
+                    ((cdr_pos), flag) = search_cdr3_signature(seq, v_region, j_region, frame)
+
                     if cdr_pos:
+                        flags.append(flag)
                         break
+                if cdr_pos is None:
+                    flags.append('FAILED_UNGUIDED_SEARCH')
 
             if cdr_pos and cdr_pos[1] - cdr_pos[0] < VDJ_MAX_CDR3_LEN:
                 self.cdr3_start = cdr_pos[0]
                 self.cdr3_stop = cdr_pos[1]
                 self.cdr3_seq = seq[cdr_pos[0]:cdr_pos[1]]
-                self.cdr3 = ''.join([CODON_TO_AA[self.cdr3_seq[i:(i+3)]] for i in range(0, len(self.cdr3_seq), 3)])
+                self.cdr3 = ''.join([codon_to_aa(self.cdr3_seq[i:(i+3)]) for i in xrange(0, len(self.cdr3_seq) - 2, 3)])
 
                 assert (cdr_pos[1] - cdr_pos[0]) % 3 == 0
+            else:
+                if cdr_pos is None:
+                    flags.append('NO_CDR3')
+                else:
+                    flags.append('CDR3_TOO_LONG:%d' % (cdr_pos[1] - cdr_pos[0]))
 
         if not self.cdr3:
             # Either this didn't have both a V and a J, or the annotation-guided search failed to give a valid CDR3.
@@ -795,48 +901,67 @@ class AnnotatedContig(object):
             v_region = v_regions[0] if v_regions else None
             j_region = j_regions[0] if j_regions else None
 
-            res = search_cdr3_signature_no_vj(self.sequence, v_region, j_region)
-            if not res is None:
-                (cdr3_seq, cdr3_aas, cys_pos, fgxg_pos) = res
-                self.cdr3 = cdr3_aas
-                self.cdr3_seq = cdr3_seq
-                self.cdr3_start = cys_pos
-                self.cdr3_stop = fgxg_pos
+            if v_region is not None:
+                res = search_cdr3_signature_no_vj(self.sequence, v_region, j_region)
+                if not res is None:
+                    (cdr3_seq, cdr3_aas, cys_pos, fgxg_pos) = res
+                    self.cdr3 = cdr3_aas
+                    self.cdr3_seq = cdr3_seq
+                    self.cdr3_start = cys_pos
+                    self.cdr3_stop = fgxg_pos + 3 # End position is the start position of last amino acid + 3
+                    flags.append('FOUND_CDR3_UNGUIDED')
 
         if self.cdr3:
-            cdr3_frame = self.cdr3_start % 3 # frame wrt start of sequence
+            # cdr3_frame = self.cdr3_start % 3 # frame wrt start of sequence
 
-            if self.start_codon_pos is None and len(v_regions) == 0:
-                # We don't have a V or a start codon.
+            if self.start_codon_pos is None:
+                # We don't have a start codon.
                 # De novo search for the start codon in the CDR3 frame;
-                # Get the leftmost possible start codon match
-                for i in range(cdr3_frame, len(self.sequence), 3):
+                # Get the leftmost possible start codon match before a stop codon
+                for i in xrange(self.cdr3_start, 0, -3):
                     if self.codon(i) in START_CODONS:
                         self.start_codon_pos = i
+                    if self.start_codon_pos and self.codon(i) in STOP_CODONS:
                         break
+
+                if self.start_codon_pos:
+                    flags.append('FOUND_DE_NOVO_V_START')
 
             if self.start_codon_pos is not None:
                 # If we have a start codon, try to find a stop codon in-frame
-                for i in range(self.start_codon_pos, len(self.sequence), 3):
+                for i in xrange(self.start_codon_pos, len(self.sequence), 3):
                     if self.codon(i) in STOP_CODONS:
                         self.stop_codon_pos = i
                         break
 
             # Determine productivity
             if self.has_full_length_vj_hit():
-                self.productive = self.start_codon_pos is not None and \
-                                  (self.start_codon_pos % 3) == (self.cdr3_start % 3) and \
-                    all([self.codon(i) not in STOP_CODONS for i in range(self.start_codon_pos,
-                                                                         j_region.contig_match_end, 3)])
+                has_start = self.start_codon_pos is not None
+                cdr3_in_frame = has_start and self.cdr3_start is not None and \
+                                (self.start_codon_pos % 3) == (self.cdr3_start % 3)
+                vj_nostop = has_start and \
+                            all([self.codon(i) not in STOP_CODONS for i in xrange(self.start_codon_pos,
+                                                                                  j_region.contig_match_end, 3)])
+                self.productive = has_start and cdr3_in_frame and vj_nostop
 
-            elif any([self.codon(i) in STOP_CODONS for i in range(self.cdr3_start, self.cdr3_stop, 3)]):
+                if not has_start:
+                    flags.append('NO_START')
+                if has_start and self.cdr3_start is not None and not cdr3_in_frame:
+                    flags.append('CDR3_OUT_OF_FRAME')
+                if not vj_nostop:
+                    flags.append('VJ_STOP')
+
+            elif any([self.codon(i) in STOP_CODONS for i in xrange(self.cdr3_start, self.cdr3_stop, 3)]):
                 # We don't know where the transcript starts and ends so we'll
                 # be cautious about calling productivity.
+                flags.append('CDR3_STOP')
                 self.productive = False
 
         # Translate the entire reading frame if possible
         if self.start_codon_pos is not None:
-            self.aa_sequence = ''.join([CODON_TO_AA[self.codon(i)] for i in range(self.start_codon_pos, len(self.sequence) - 2, 3)])
+            self.aa_sequence = ''.join([codon_to_aa(self.codon(i)) for i in xrange(self.start_codon_pos, len(self.sequence) - 2, 3)])
+
+        self.cdr3_flag = '|'.join([f for f in flags if f is not None and len(f) > 0])
 
 
 
@@ -1283,23 +1408,27 @@ def save_clonotype_info_csv(csv, consensus_contigs):
             clonotypes[clonotype_id]['members'] = set(contig.info_dict['cells'])
             clonotypes[clonotype_id]['frequency'] = contig.info_dict['clonotype_freq']
             clonotypes[clonotype_id]['proportion'] = contig.info_dict['clonotype_prop']
-            clonotypes[clonotype_id]['cdr3s_aa'] = set()
-            clonotypes[clonotype_id]['cdr3s_nt'] = set()
+            clonotypes[clonotype_id]['cdr3s'] = set()
         else:
             assert clonotypes[clonotype_id]['members'] == set(contig.info_dict['cells'])
             assert clonotypes[clonotype_id]['frequency'] == contig.info_dict['clonotype_freq']
             assert clonotypes[clonotype_id]['proportion'] == contig.info_dict['clonotype_prop']
 
-        clonotypes[clonotype_id]['cdr3s_aa'].add((chain, contig.cdr3))
-        clonotypes[clonotype_id]['cdr3s_nt'].add((chain, contig.cdr3_seq))
+        clonotypes[clonotype_id]['cdr3s'].add((chain, contig.cdr3_seq, contig.cdr3))
 
-    # Generate cdr3 annotation strings, chain:cdr3;chain:cdr3
-    # sorted by (chain, cdr3)
+    # Generate cdr3 annotation strings (for nt and aa), chain:cdr3;chain:cdr3
+    # sorted by (chain, cdr3_seq, cdr3_aa)
     def get_cdr3_list_string(chain_cdr3s):
-        return ';'.join(['%s:%s' % chain_cdr3 for chain_cdr3 in sorted(list(chain_cdr3s))])
+        cdr3s_nt = []
+        cdr3s_aa = []
+        for chain, nt, aa in sorted(list(chain_cdr3s)):
+            cdr3s_nt.append('%s:%s' % (chain, nt))
+            cdr3s_aa.append('%s:%s' % (chain, aa))
+        return ';'.join(cdr3s_nt), ';'.join(cdr3s_aa)
     for clonotype in clonotypes.itervalues():
-        clonotype['cdr3s_aa'] = get_cdr3_list_string(clonotype['cdr3s_aa'])
-        clonotype['cdr3s_nt'] = get_cdr3_list_string(clonotype['cdr3s_nt'])
+        cdr3s_nt, cdr3_aa = get_cdr3_list_string(clonotype['cdr3s'])
+        clonotype['cdr3s_nt'] = cdr3s_nt
+        clonotype['cdr3s_aa'] = cdr3_aa
 
     # Sort by frequency, descending
     clonotypes = sorted(clonotypes.values(), key=lambda c: c['frequency'], reverse=True)

@@ -6,8 +6,8 @@
 #
 
 import string
+import subprocess
 import os.path
-from tenkit.constants import BARCODE_LOCATION
 from tenkit.exceptions import NotSupportedException
 
 NUCS = ['A', 'C', 'G', 'T']
@@ -98,13 +98,11 @@ def get_cigar_map(cigar):
 
     return cigar_map
 
-def load_barcode_whitelist(fn):
-
-    if not os.path.exists(fn):
-        fn = os.path.join(BARCODE_LOCATION, fn + ".txt")
-        if not os.path.exists(fn):
-            raise NameError("unable to find barcode whitelist: %s" % fn)
-
-    ''' Barcode whitelist is just a text file of valid barcodes, one per line. Lines containing the '#' character are ignored'''
-    barcodes = [ x.strip() for x in open(fn, 'r') if not ('#' in x) ]
-    return set(barcodes)
+def open_maybe_gzip(filename, mode='r'):
+    if filename.endswith('.gz'):
+        gunzip = subprocess.Popen(['gunzip', '-c', filename],
+                                  stdout=subprocess.PIPE,
+                                  preexec_fn=os.setsid)
+        return gunzip.stdout
+    else:
+        return open(filename, mode)

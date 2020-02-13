@@ -4,17 +4,21 @@
 #
 
 import cellranger.analysis.diffexp as cr_diffexp
-import cellranger.analysis.io as cr_io
+import cellranger.analysis.io as analysis_io
 from cellranger.analysis.singlegenome import SingleGenomeAnalysis
-import cellranger.constants as cr_constants
+import cellranger.h5_constants as h5_constants
+import cellranger.analysis.constants as analysis_constants
 import cellranger.matrix as cr_matrix
-import cellranger.utils as cr_utils
+import cellranger.io as cr_io
+import cellranger.library_constants as lib_constants
+
+NUM_THREADS_MIN = 4
+#TODO Not clear why this stage takes > 1 thread. Martian thinks it does and kills it on long jobs
 
 __MRO__ = """
 stage RUN_DIFFERENTIAL_EXPRESSION(
     in  h5     matrix_h5,
     in  h5     clustering_h5,
-    in  bool   is_multi_genome,
     in  bool   skip,
     in  int    random_seed,
     in  int    max_clusters,
@@ -27,15 +31,17 @@ stage RUN_DIFFERENTIAL_EXPRESSION(
 """
 
 def split(args):
-    if args.skip or args.is_multi_genome:
-        return {'chunks': [{'__mem_gb': cr_constants.MIN_MEM_GB}]}
+    if args.skip:
+        return {'chunks': [{'__mem_gb': h5_constants.MIN_MEM_GB}]}
 
     chunks = []
-    matrix_mem_gb = cr_matrix.GeneBCMatrix.get_mem_gb_from_matrix_h5(args.matrix_h5)
-    chunk_mem_gb = max(matrix_mem_gb * 3, cr_constants.MIN_MEM_GB)
+    # FIXME: Add one for reasons unknown
+    matrix_mem_gb = 1.8 * cr_matrix.CountMatrix.get_mem_gb_from_matrix_h5(args.matrix_h5)
+    chunk_mem_gb = int(max(matrix_mem_gb, h5_constants.MIN_MEM_GB))
 
     # HACK - give big jobs more threads in order to avoid overloading a node
-    threads = cr_utils.get_thread_request_from_mem_gb(chunk_mem_gb)
+    threads = min(cr_io.get_thread_request_from_mem_gb(chunk_mem_gb), NUM_THREADS_MIN)
+    threads = 4
 
     for key in SingleGenomeAnalysis.load_clustering_keys_from_h5(args.clustering_h5):
         chunks.append({
@@ -44,32 +50,35 @@ def split(args):
             '__threads': threads,
         })
 
-    return {'chunks': chunks}
+    return {'chunks': chunks, 'join': {'__mem_gb' : 1}}
 
 def main(args, outs):
-    if args.skip or args.is_multi_genome:
+    if args.skip:
         return
 
-    matrix = cr_matrix.GeneBCMatrix.load_h5(args.matrix_h5)
+    matrix = cr_matrix.CountMatrix.load_h5_file(args.matrix_h5)
+
+    # For now, only compute for gene expression features
+    matrix = matrix.select_features_by_type(lib_constants.GENE_EXPRESSION_LIBRARY_TYPE)
 
     clustering = SingleGenomeAnalysis.load_clustering_from_h5(args.clustering_h5, args.clustering_key)
 
     diffexp = cr_diffexp.run_differential_expression(matrix, clustering.clusters)
 
-    with cr_io.open_h5_for_writing(outs.diffexp_h5) as f:
+    with analysis_io.open_h5_for_writing(outs.diffexp_h5) as f:
         cr_diffexp.save_differential_expression_h5(f, args.clustering_key, diffexp)
 
     cr_diffexp.save_differential_expression_csv(args.clustering_key, diffexp, matrix, outs.diffexp_csv)
 
 def join(args, outs, chunk_defs, chunk_outs):
-    if args.skip or args.is_multi_genome:
+    if args.skip:
         return
 
     chunk_h5s = [chunk_out.diffexp_h5 for chunk_out in chunk_outs]
     chunk_csv_dirs = [chunk_out.diffexp_csv for chunk_out in chunk_outs]
 
-    cr_io.combine_h5_files(chunk_h5s, outs.diffexp_h5, [cr_constants.ANALYSIS_H5_DIFFERENTIAL_EXPRESSION_GROUP,
-                                                        cr_constants.ANALYSIS_H5_KMEANS_DIFFERENTIAL_EXPRESSION_GROUP])
+    analysis_io.combine_h5_files(chunk_h5s, outs.diffexp_h5, [analysis_constants.ANALYSIS_H5_DIFFERENTIAL_EXPRESSION_GROUP,
+                                                        analysis_constants.ANALYSIS_H5_KMEANS_DIFFERENTIAL_EXPRESSION_GROUP])
 
     for csv_dir in chunk_csv_dirs:
-        cr_utils.copytree(csv_dir, outs.diffexp_csv, allow_existing=True)
+        cr_io.copytree(csv_dir, outs.diffexp_csv, allow_existing=True)

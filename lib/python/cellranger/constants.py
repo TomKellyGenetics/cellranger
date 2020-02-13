@@ -4,30 +4,33 @@
 #
 import collections
 import os
+from cellranger.library_constants import GENE_EXPRESSION_LIBRARY_TYPE
 
 Interval = collections.namedtuple('Interval', ['chrom', 'start', 'end', 'length', 'strand'])
 Transcript = collections.namedtuple('Transcript', ['gene', 'length', 'gc_content', 'intervals'])
 Gene = collections.namedtuple('Gene', ['id', 'name', 'length', 'gc_content', 'intervals'])
-TranscriptAlignment = collections.namedtuple('TranscriptAlignment', ['transcript', 'strand', 'pos', 'cigarstring', 'alen'])
 Primer = collections.namedtuple('Primer', ['name', 'seq'])
 
 ReadDef = collections.namedtuple('ReadDef', 'read_type, offset, length')
 
-ProcessedRead = collections.namedtuple('ProcessedRead', 'raw_seq, processed_seq, qual')
+STR_DTYPE_CHAR = 'S'
+UNICODE_DTYPE_CHAR = 'U'
+STRING_DTYPE_CHARS = (STR_DTYPE_CHAR, UNICODE_DTYPE_CHAR)
 
 BAM_FILE_STREAM = '-' # filename telling samtools and pysam to read stdin / write stdout
 
-GZIP_SUFFIX = '.gz'
 NUM_CHECK_BARCODES_FOR_ORIENTATION = 1000
 REVCOMP_BARCODE_THRESHOLD = 0.75
 
 CELLRANGER_LIB_PATH = os.path.dirname(os.path.abspath(__file__))
 BARCODE_WHITELIST_PATH = os.path.join(CELLRANGER_LIB_PATH, 'barcodes')
+BARCODE_WHITELIST_TRANSLATE_PATH = os.path.join(BARCODE_WHITELIST_PATH, 'translation')
 
 NO_INPUT_FASTQS_MESSAGE = "No input FASTQs were found with the requested sample indices."
 
 NUM_HITS_TAG = 'NH'
 MULTIMAPPER_TAG = 'MM'
+ANTISENSE_TAG = 'AN'
 RAW_BARCODE_TAG = 'CR'
 PROCESSED_BARCODE_TAG = 'CB'
 RAW_BARCODE_QUAL_TAG = 'CY'
@@ -38,12 +41,20 @@ TRANSCRIPTS_TAG = 'TX'
 GENE_IDS_TAG = 'GX'
 GENE_NAMES_TAG = 'GN'
 MAPPING_REGION_TAG = 'RE'
-TRIMMED_SEQ_TAG = 'TR'
-TRIMMED_QUAL_TAG = 'TQ'
+RAW_FEATURE_BARCODE_TAG = 'fr'
+PROCESSED_FEATURE_BARCODE_TAG = 'fb'
+FEATURE_BARCODE_QUAL_TAG = 'fq'
+FEATURE_IDS_TAG = 'fx'
+LIBRARY_INDEX_TAG = 'li'
+EXTRA_FLAGS_TAG = 'xf'
+EXTRA_FLAGS_CONF_MAPPED_TXOME   =  1
+EXTRA_FLAGS_LOW_SUPPORT_UMI     =  2
+EXTRA_FLAGS_GENE_DISCORDANT     =  4
+EXTRA_FLAGS_UMI_COUNT           =  8
+EXTRA_FLAGS_CONF_MAPPED_FEATURE = 16
 GEM_GROUP_SEP = '-'
 
 MATE_RESCUE_TAG = 'MR'
-MATE_FILTER_TAG = 'MI'
 
 '''
 Illumina read types and their internal names.
@@ -67,7 +78,7 @@ ALL_READ_TYPE = 'all'
 MAPPED_READ_TYPE = 'mapped'
 CONF_MAPPED_READ_TYPE = 'conf_mapped'
 CONF_MAPPED_BC_READ_TYPE = 'conf_mapped_barcoded'
-CONF_MAPPED_DEDUPED_READ_TYPE = 'conf_mapped_deduped'
+CONF_MAPPED_DEDUPED_READ_TYPE = 'conf_mapped_deduped_barcoded'
 READ_TYPES = [
     ALL_READ_TYPE,
     MAPPED_READ_TYPE,
@@ -137,6 +148,12 @@ REGIONS = [
     INTRONIC_REGION,
 ]
 
+REGION_TAG_MAP = {
+    'E': EXONIC_REGION,
+    'N': INTRONIC_REGION,
+    'I': INTERGENIC_REGION,
+}
+
 '''
 Duplicate types:
     cdna_pcr_uncorrected: determined by gene ID, barcode, strand, uncorrected umi
@@ -157,7 +174,7 @@ Subsampling types and target depths
 '''
 
 # Fixed depth targets in addition to quantile-based targets
-SUBSAMPLE_READS_PER_CELL = [20e3, 50e3]
+SUBSAMPLE_READS_PER_CELL = [5e3, 20e3, 50e3]
 
 RAW_SUBSAMPLE_TYPE = 'raw_rpc'
 MAPPED_SUBSAMPLE_TYPE = 'conf_mapped_barcoded_filtered_bc_rpc'
@@ -202,54 +219,32 @@ FORWARD_STRAND = '+'
 REVERSE_STRAND = '-'
 STRANDS = [FORWARD_STRAND, REVERSE_STRAND]
 
+THREE_PRIME = 'three_prime'
+FIVE_PRIME = 'five_prime'
+
 READ_POSITION_CUTOFFS = range(0, 5100, 100)
 INSERT_SIZE_CUTOFFS = range(0,1550,50)
 PER_DUPE_GROUP_MAX = 100
 DEFAULT_TOP_BARCODE_CUTOFF = 1000
-MIN_READS_PER_BARCODE = 2
-MIN_READS_PER_GENE = 1
+MIN_COUNTS_PER_BARCODE = 2
+MIN_COUNTS_PER_GENE = 1
 ORDMAG_RECOVERED_CELLS_QUANTILE = 0.99
 ORDMAG_NUM_BOOTSTRAP_SAMPLES = 100
 FILTER_BARCODES_MAX_RECOVERED_CELLS_MULTIPLE = 6
 DEFAULT_RECOVERED_CELLS_PER_GEM_GROUP = 3000
-FILTER_BARCODES_ORDMAG = 'ordmag'
-FILTER_BARCODES_MANUAL = 'manual'
-FILTER_BARCODES_FIXED_CUTOFF = 'fixed_cutoff'
+
+MINIMUM_TRIMMED_READ_LENGTH_PREFLIGHT = 16
 
 READ_PREFIX_LENGTH = 10
 TOP_N = 5
 # Downsample reads when tracking top sequences to constrain mem usage
 TOP_RAW_SEQUENCE_SAMPLE_RATE = 0.01
 TOP_PROCESSED_SEQUENCE_SAMPLE_RATE = 0.1
-DEFAULT_MULTIPLET_THRESHOLD = 10
-MULTIPLET_PROB_THRESHOLD = 0.01
-NUM_MULTIPLET_BOOTSTRAP_SAMPLES = 1000
-GEM_CLASS_GENOME0 = 'genome0'
-GEM_CLASS_GENOME1 = 'genome1'
-GEM_CLASS_MULTIPLET = 'Multiplet'
-GEM_CLASSES = [GEM_CLASS_GENOME0, GEM_CLASS_GENOME1, GEM_CLASS_MULTIPLET]
-COUNT_PURITY_OUTLIER_PROB_THRESHOLD = 0.01
 HOMOPOLYMER_LENGTH = 15
 
-MULTI_REFS_PREFIX = 'multi'
 DEFAULT_REPORT_TYPE = 'summary'
 H5_BC_SEQUENCE_COL = 'bc_sequence'
 
-H5_GENE_IDS_ATTR = 'genes'
-H5_GENE_NAMES_ATTR = 'gene_names'
-H5_BCS_ATTR = 'barcodes'
-H5_MATRIX_DATA_ATTR = 'data'
-H5_MATRIX_INDICES_ATTR = 'indices'
-H5_MATRIX_INDPTR_ATTR = 'indptr'
-H5_MATRIX_SHAPE_ATTR = 'shape'
-H5_MATRIX_ATTRS = {H5_MATRIX_DATA_ATTR: 'int32', H5_MATRIX_INDICES_ATTR: 'int64', H5_MATRIX_INDPTR_ATTR: 'int64', H5_MATRIX_SHAPE_ATTR: 'int32'}
-H5_COMPRESSION_LEVEL = 1
-
-H5_FILETYPE_KEY = 'filetype'
-H5_LIBRARY_ID_MAPPING_KEY = 'library_ids'
-H5_ORIG_GEM_GROUP_MAPPING_KEY = 'original_gem_groups'
-H5_CHEMISTRY_DESC_KEY = 'chemistry_description'
-H5_METADATA_ATTRS = [H5_LIBRARY_ID_MAPPING_KEY, H5_ORIG_GEM_GROUP_MAPPING_KEY, H5_CHEMISTRY_DESC_KEY]
 
 CELLRANGER_VERSION_KEY = 'cellranger_version'
 
@@ -295,16 +290,10 @@ on clusters without memory reservations. As of 3/15/2017, it's used by:
 '''
 MEM_GB_PER_THREAD = 8
 
-MIN_MEM_GB = 6
-MIN_MEM_GB_NOWHITELIST = 64
 COUNT_GENES_MAX_MEM_GB = 64
 BYTES_PER_STR_INT_DICT_ENTRY = 180 # Empirical testing w/ str:int dicts and pympl.asizeof; len(k) = 10,14; *1.25 safety
-NUM_BARCODES_PER_MEM_GB = 175000
+NUM_BARCODES_PER_MEM_GB = 500000
 NUM_MOLECULE_INFO_ENTRIES_PER_CHUNK = 40000000
-NUM_MATRIX_ENTRIES_PER_MEM_GB = 50e6
-NUM_IRLB_MATRIX_ENTRIES_PER_MEM_GB = 16e6 # based on empirical testing
-IRLB_BASE_MEM_GB = 1
-MATRIX_MEM_GB_MULTIPLIER = 2 # TODO reduce this once we're confident about the actual memory bounds
 
 SUPPORTED_ALIGNERS = ['star']
 STAR_REQUIRED_FILES = [
@@ -324,41 +313,30 @@ MATRIX_USE_MATRIX_FOR_READ_TYPE = [CONF_MAPPED_DEDUPED_READ_TYPE]
 
 UMI_POLYT_SUFFIX_LENGTH = 5
 
-RANDOM_STATE = 0
-TSNE_N_COMPONENTS = 2
-TSNE_THETA = 0.5
-TSNE_DEFAULT_PERPLEXITY = 30
-TSNE_MAX_ITER = 1000
-TSNE_STOP_LYING_ITER = 250
-TSNE_MOM_SWITCH_ITER = 250
-PCA_N_COMPONENTS_DEFAULT = 10
-MIN_N_CLUSTERS = 2
-MAX_N_CLUSTERS_DEFAULT = 10
-GRAPHCLUST_NEIGHBORS_DEFAULT = 1
-GRAPHCLUST_NEIGHBOR_A_DEFAULT = -230.0
-GRAPHCLUST_NEIGHBOR_B_DEFAULT = 120.0
-
-ANALYSIS_H5_MATRIX_GROUP = 'matrix'
-ANALYSIS_H5_PCA_GROUP = 'pca'
-ANALYSIS_H5_KMEANS_GROUP = 'kmeans'  # Deprecated
-ANALYSIS_H5_KMEANS_DIFFERENTIAL_EXPRESSION_GROUP = 'differential_expression' # Deprecated
-ANALYSIS_H5_CLUSTERING_GROUP = 'clustering'
-ANALYSIS_H5_DIFFERENTIAL_EXPRESSION_GROUP = 'all_differential_expression'
-ANALYSIS_H5_TSNE_GROUP = 'tsne'
-
 NORM_MODE_MAPPED = 'mapped'
-NORM_MODE_RAW = 'raw'
 NORM_MODE_NONE = 'none'
-NORM_MODES = [NORM_MODE_MAPPED, NORM_MODE_RAW, NORM_MODE_NONE]
+NORM_MODES = [NORM_MODE_MAPPED, NORM_MODE_NONE]
 
 AGG_ID_FIELD = 'library_id'
 AGG_H5_FIELD = 'molecule_h5'
+AGG_BATCH_FIELD = 'batch'
+# to distinguish from user-defined keys
+AGG_METADATA_FIELDS = [AGG_ID_FIELD, AGG_H5_FIELD, AGG_BATCH_FIELD]
 
 MAX_INSERT_SIZE = 1000
 
 ''' Chemistry detection '''
 DETECT_CHEMISTRY_MIN_FRAC_WHITELIST = 0.10
+# 26bcumi + 13spacer + 11bp for gene expression
+DETECT_5P_CHEMISTRY_MIN_R1_LEN_PE = 50
+# 26bcumi + 13spacer + 50bp for assembler
+DETECT_VDJ_CHEMISTRY_MIN_R1_LEN_PE = 90
 DETECT_CHEMISTRY_INITIAL_READS = 100000
+
+
+"""PIPELINE NAMES"""
+PIPELINE_VDJ = 'vdj'
+PIPELINE_COUNT = 'count'
 
 PACKAGE_VERSION_CMDS = [
     {
@@ -412,3 +390,12 @@ TEST_FILE_OUT_DIR = os.path.join(CODE_PATH, 'test_files', 'outputs')
 
 BARCODE_CSV_COLNAME = 'Barcode'
 GENE_ID_CSV_COLNAME = 'Gene'
+
+ALIGN_LIBRARY_TYPES = [GENE_EXPRESSION_LIBRARY_TYPE]
+
+# Constants for barcode compatability checking
+BARCODE_COMPATIBILITY_CUTOFF = 0.1
+NUM_READS_TO_CHECK_BARCODE = 400000
+
+# Field names for the `--libraries` csv input file
+LIBRARIES_CSV_FIELDS = ['fastqs', 'sample', 'library_type']

@@ -2,8 +2,28 @@
 #
 # Copyright (c) 2017 10X Genomics, Inc. All rights reserved.
 #
-import cellranger.constants as cr_constants
+from collections import namedtuple
+import cellranger.analysis.constants as analysis_constants
 import cellranger.webshim.constants.shared as shared
+import cellranger.feature.constants as feature_constants
+import cellranger.rna.library as rna_library
+
+REPORT_PREFIX_CRISPR = feature_constants.REPORT_PREFIX_CRISPR + '_'
+DISPLAY_PREFIX_CRISPR = feature_constants.DISPLAY_PREFIX_CRISPR + ' '
+
+REPORT_PREFIX_ANTIBODY = feature_constants.REPORT_PREFIX_ANTIBODY + '_'
+DISPLAY_PREFIX_ANTIBODY = feature_constants.DISPLAY_PREFIX_ANTIBODY + ' '
+
+# These define information about the sample required to generate a web summary
+CountSampleProperties = namedtuple('CountSampleProperties',
+                                   ['sample_id', 'sample_desc', 'genomes', 'version'])
+
+AggrSampleProperties = namedtuple('AggrSampleProperties',
+                                  ['sample_id', 'sample_desc', 'genomes', 'version', 'agg_batches'])
+
+ReanalyzeSampleProperties = namedtuple('ReanalyzeSampleProperties',
+                                  ['sample_id', 'sample_desc', 'genomes', 'version'])
+
 
 PCA_PRCT_CLIP = [0.1, 99.9]
 TSNE_TOTALCOUNTS_PRCT_CLIP = [5, 95]
@@ -21,17 +41,17 @@ SATURATION_LINE = 0.9
 
 GEM_CALL_LABELS = [
     {
-        'key': cr_constants.GEM_CLASS_GENOME0,
+        'key': analysis_constants.GEM_CLASS_GENOME0,
         'label': 'genome0',
         'color': 'rgb(88,165,50)',
     },
     {
-        'key': cr_constants.GEM_CLASS_GENOME1,
+        'key': analysis_constants.GEM_CLASS_GENOME1,
         'label': 'genome1',
         'color': 'rgb(0,161,223)',
     },
     {
-        'key': cr_constants.GEM_CLASS_MULTIPLET,
+        'key': analysis_constants.GEM_CLASS_MULTIPLET,
         'label': 'Multiplet',
         'color': 'rgb(212,212,212)',
     },
@@ -40,20 +60,20 @@ GEM_CALL_LABELS = [
 TOTAL_READS_METRIC = {
     'name': 'total_reads',
     'display_name': 'Number of Reads',
-    'description': 'Total number of single-end reads that were assigned to this library in demultiplexing.',
+    'description': 'Total number of read pairs that were assigned to this library in demultiplexing.',
     'format': 'integer',
 }
 
 PRENORM_READS_METRIC = {
     'name': 'pre_normalization_total_reads',
     'display_name': 'Pre-Normalization Number of Reads',
-    'description': 'Total number of single-end reads that were assigned to these libraries in demultiplexing.',
+    'description': 'Total number of read pairs that were assigned to these libraries in demultiplexing.',
     'format': 'integer',
 }
 POSTNORM_READS_METRIC = {
     'name': 'post_normalization_total_reads',
     'display_name': 'Post-Normalization Number of Reads',
-    'description': 'Number of single-end reads after normalizing for depth among multiple libraries.',
+    'description': 'Number of read pairs after normalizing for depth among multiple libraries.',
     'format': 'integer',
 }
 
@@ -71,50 +91,107 @@ GOOD_UMIS_METRIC = {
     'format': 'percent',
 }
 
+GENOME_MAPPED_READS_METRIC = {
+    'name': 'genome_mapped_reads_frac',
+    'display_name': 'Reads Mapped to Genome',
+    'description': 'Fraction of reads that mapped to the %s genome.',
+    'format': 'percent',
+    'prefix': 'genomes',
+    'hidden': 'len(genomes) <= 1',
+}
+
+MULTI_GENOME_MAPPED_READS_METRIC = {
+    'name': 'multi_genome_mapped_reads_frac',
+    'display_name': 'Reads Mapped to Genome',
+    'description': 'Fraction of reads that mapped to the genome.',
+    'format': 'percent',
+}
+
+GENOME_CONF_MAPPED_READS_METRIC = {
+    'name': 'genome_conf_mapped_reads_frac',
+    'display_name': 'Reads Mapped Confidently to Genome',
+    'description': 'Fraction of reads that mapped uniquely to the %s genome. If a gene mapped to exonic loci from a single gene and also to non-exonic loci, it is considered uniquely mapped to one of the exonic loci.',
+    'format': 'percent',
+    'prefix': 'genomes',
+    'hidden': 'len(genomes) <= 1',
+}
+
+MULTI_GENOME_CONF_MAPPED_READS_METRIC = {
+    'name': 'multi_genome_conf_mapped_reads_frac',
+    'display_name': 'Reads Mapped Confidently to Genome',
+    'description': 'Fraction of reads that mapped uniquely to the %s genome. If a gene mapped to exonic loci from a single gene and also to non-exonic loci, it is considered uniquely mapped to one of the exonic loci.',
+    'format': 'percent',
+}
+
 TRANSCRIPTOME_CONF_MAPPED_READS_METRIC = {
     'name': 'transcriptome_conf_mapped_reads_frac',
     'display_name': 'Reads Mapped Confidently to Transcriptome',
-    'description': 'Fraction of reads that mapped to a unique gene in the %s transcriptome with a high mapping quality score as reported by the aligner. At least 50% of the read must overlap with an exon and the read must be consistent with annotated splice junctions.',
+    'description': 'Fraction of reads that mapped to a unique gene in the %s transcriptome. The read must be consistent with annotated splice junctions. These reads are considered for UMI counting.',
     'format': 'percent',
     'prefix': 'genomes',
+    'hidden': 'len(genomes) <= 1',
 }
 
 MULTI_TRANSCRIPTOME_CONF_MAPPED_READS_METRIC = {
     'name': 'multi_transcriptome_conf_mapped_reads_frac',
     'display_name': 'Reads Mapped Confidently to Transcriptome',
-    'description': 'Fraction of reads that mapped to a unique gene in any specified transcriptome with a high mapping quality score as reported by the aligner. At least 50% of the read must overlap with an exon and the read must be consistent with annotated splice junctions.',
+    'description': 'Fraction of reads that mapped to a unique gene in the transcriptome. The read must be consistent with annotated splice junctions. These reads are considered for UMI counting.',
     'format': 'percent',
 }
 
 ANTISENSE_CONF_MAPPED_READS_METRIC = {
     'name': 'multi_antisense_reads_frac',
     'display_name': 'Reads Mapped Antisense to Gene',
-    'description': 'Fraction of reads confidently mapped to the transcriptome, but on the opposite strand of their annotated gene.',
+    'description': 'Fraction of reads confidently mapped to the transcriptome, but on the opposite strand of their annotated gene. A read is counted as antisense if it has any alignments that are consistent with an exon of a transcript but antisense to it, and has no sense alignments.',
     'format': 'percent',
 }
 
 INTERGENIC_CONF_MAPPED_READS_METRIC = {
     'name': 'intergenic_conf_mapped_reads_frac',
     'display_name': 'Reads Mapped Confidently to Intergenic Regions',
-    'description': 'Fraction of reads that mapped to the intergenic regions of the %s genome with a high mapping quality score as reported by the aligner.',
+    'description': 'Fraction of reads that mapped uniquely to an intergenic region of the %s genome.',
     'format': 'percent',
     'prefix': 'genomes',
+    'hidden': 'len(genomes) <= 1',
+}
+
+MULTI_INTERGENIC_CONF_MAPPED_READS_METRIC = {
+    'name': 'multi_intergenic_conf_mapped_reads_frac',
+    'display_name': 'Reads Mapped Confidently to Intergenic Regions',
+    'description': 'Fraction of reads that mapped uniquely to an intergenic region of the genome.',
+    'format': 'percent',
 }
 
 INTRONIC_CONF_MAPPED_READS_METRIC = {
     'name': 'intronic_conf_mapped_reads_frac',
     'display_name': 'Reads Mapped Confidently to Intronic Regions',
-    'description': 'Fraction of reads that mapped to the intronic regions of the %s genome with a high mapping quality score as reported by the aligner.',
+    'description': 'Fraction of reads that mapped uniquely to an intronic region of the %s genome.',
     'format': 'percent',
     'prefix': 'genomes',
+    'hidden': 'len(genomes) <= 1',
+}
+
+MULTI_INTRONIC_CONF_MAPPED_READS_METRIC = {
+    'name': 'multi_intronic_conf_mapped_reads_frac',
+    'display_name': 'Reads Mapped Confidently to Intronic Regions',
+    'description': 'Fraction of reads that mapped uniquely to an intronic region of the genome.',
+    'format': 'percent',
 }
 
 EXONIC_CONF_MAPPED_READS_METRIC = {
     'name': 'exonic_conf_mapped_reads_frac',
     'display_name': 'Reads Mapped Confidently to Exonic Regions',
-    'description': 'Fraction of reads that mapped to the exonic regions of the genome with a high mapping quality score as reported by the aligner.',
+    'description': 'Fraction of reads that mapped uniquely to an exonic region of the %s genome.',
     'format': 'percent',
     'prefix': 'genomes',
+    'hidden': 'len(genomes) <= 1',
+}
+
+MULTI_EXONIC_CONF_MAPPED_READS_METRIC = {
+    'name': 'multi_exonic_conf_mapped_reads_frac',
+    'display_name': 'Reads Mapped Confidently to Exonic Regions',
+    'description': 'Fraction of reads that mapped uniquely to an exonic region of the genome.',
+    'format': 'percent',
 }
 
 NUMBER_OF_DETECTED_CELLS_METRIC = {
@@ -198,28 +275,28 @@ SUMMARY_METRICS = [
 MULTIPLET_RATE_METRIC = {
     'name': 'filtered_bcs_inferred_multiplet_rate',
     'display_name': 'Fraction GEMs with >1 Cell',
-    'description': 'The mean fraction of cell-associated barcodes estimated to be associated with more than one cell, calculated via bootstrap sampling.',
+    'description': 'The mean fraction of cell-associated barcodes estimated to be associated with more than one cell, calculated via bootstrap sampling and adjusting for the ratio of the two cell types.',
     'format': 'percent',
 }
 
 MULTIPLET_RATE_LB_METRIC = {
     'name': 'filtered_bcs_inferred_multiplet_rate_lb',
     'display_name': 'Fraction GEMs with >1 Cell (Lower Bound)',
-    'description': 'The lower bound of the 95% confidence interval of the fraction of cell-associated barcodes estimated to be associated with more than one cell, calculated via bootstrap sampling.',
+    'description': 'The lower bound of the 95% confidence interval of the fraction of cell-associated barcodes estimated to be associated with more than one cell, calculated via bootstrap sampling and adjusting for the ratio of the two cell types.',
     'format': 'percent',
 }
 
 MULTIPLET_RATE_UB_METRIC = {
     'name': 'filtered_bcs_inferred_multiplet_rate_ub',
     'display_name': 'Fraction GEMs with >1 Cell (Upper Bound)',
-    'description': 'The upper bound of the 95% confidence interval of the fraction of cell-associated barcodes estimated to be associated with more than one cell, calculated via bootstrap sampling.',
+    'description': 'The upper bound of the 95% confidence interval of the fraction of cell-associated barcodes estimated to be associated with more than one cell, calculated via bootstrap sampling and adjusting for the ratio of the two cell types.',
     'format': 'percent',
 }
 
 MEAN_COUNT_PURITY_METRIC = {
     'name': 'multi_filtered_bcs_mean_count_purity',
     'display_name': 'Mean UMI Count Purity',
-    'description': 'Among single-cell GEM barcodes, the mean fraction of UMI counts coming from the transcriptome of the cell inferred to be in the GEM, as opposed to a transcriptome that should not be present in the cell.',
+    'description': 'Among single-cell GEM barcodes, the total fraction of UMI counts coming from the transcriptome of the cell inferred to be in the GEM, as opposed to a transcriptome that should not be present in the cell.',
     'format': 'percent',
 }
 
@@ -229,7 +306,17 @@ FRAC_READS_IN_CELLS_METRIC = {
     'description': 'The fraction of valid-barcode, confidently-mapped-to-transcriptome reads with %s cell-associated barcodes.',
     'format': 'percent',
     'prefix': 'genomes',
+    'hidden': 'len(genomes) <= 1',
 }
+
+# Same as above, but summarized across all genomes present
+MULTI_FRAC_READS_IN_CELLS_METRIC = {
+    'name': 'multi_filtered_bcs_conf_mapped_barcoded_reads_cum_frac',
+    'display_name': 'Fraction Reads in Cells',
+    'description': 'The fraction of valid-barcode, confidently-mapped-to-transcriptome reads with cell-associated barcodes.',
+    'format': 'percent',
+}
+
 
 TOTAL_GENES_DETECTED_METRIC = {
     'name': 'filtered_bcs_total_unique_genes_detected',
@@ -272,23 +359,354 @@ Q30_METRICS = [
     },
 ]
 
+CRISPR_Q30_METRICS = [
+    {
+        'name': REPORT_PREFIX_CRISPR + 'bc_bases_with_q30_frac',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Q30 Bases in Barcode',
+        'description': 'Fraction of cell barcode bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'read_bases_with_q30_frac',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Q30 Bases in CRISPR Read',
+        'description': 'Fraction of CRISPR read bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator. This is Read 2 for the Single Cell 3\' v2 chemistry.',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'read2_bases_with_q30_frac',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Q30 Bases in CRISPR Read 2',
+        'description': 'Fraction of CRISPR read 2 bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'sample_index_bases_with_q30_frac',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Q30 Bases in Sample Index',
+        'description': 'Fraction of sample index bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'umi_bases_with_q30_frac',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Q30 Bases in UMI',
+        'description': 'Fraction of UMI bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+    },
+    ]
+
+CRISPR_SEQUENCING_METRICS = [
+    {
+        'name': REPORT_PREFIX_CRISPR + 'total_reads',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Number of Reads',
+        'description': 'Total number of reads',
+        'format': 'integer',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'reads_per_cell',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Mean Reads per Cell',
+        'description': 'The total number of sequenced reads divided by the number of barcodes associated with cell-containing partitions.',
+        'format': 'integer',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'good_bc_frac',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Valid Barcodes',
+        'description': 'Fraction of reads with a barcode found in or corrected to one that is found in the whitelist',
+        'format': 'percent',
+    },
+    ] + CRISPR_Q30_METRICS
+
+CRISPR_APPLICATION_METRICS = [
+     {
+        'name': REPORT_PREFIX_CRISPR + 'feature_bc_extracted_frac',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Fraction Reads with Putative Protospacer Sequence',
+        'description': 'Fraction of reads from which a putative protospacer sequence could be extracted',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'multi_transcriptome_conf_mapped_reads_frac',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Fraction Guide Reads',
+        'description': 'Fraction of reads with a recognized protospacer sequence',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'frac_feature_reads_usable',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Fraction Guide Reads Usable',
+        'description': 'Fraction of reads with a recognized protospacer sequence, a valid UMI, and a cell-associated barcode',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'feature_reads_usable_per_cell',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Guide Reads Usable per Cell',
+        'description': 'Number of guide reads usable divided by the number of cell-associated barcodes',
+        'format': '%.0f',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'unrecognized_feature_bc_frac',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Fraction Protospacer Not Recognized',
+        'description': 'Among all reads with a putative protospacer sequence, the fraction with a protospacer sequence that was not recognized',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'feature_reads_in_cells',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Guide Reads in Cells',
+        'description': 'Among reads with a recognized protospacer sequence, a valid UMI, and a valid barcode, the fraction associated with cell-containing partitions',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'frac_cells_with_protospacer',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Cells with 1 or more protospacers detected',
+        'description': 'Cells with 1 or more protospacers detected',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'frac_cells_with_multiple_protospacer',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Cells with 2 or more protospacers detected',
+        'description': 'Cells with 2 or more protospacers detected',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'multi_filtered_bcs_median_counts',
+        'display_name': DISPLAY_PREFIX_CRISPR + 'Median UMIs per Cell (summed over all recognized protospacers)',
+        'description': 'Median UMIs per Cell (summed over all recognized protospacers)',
+        'format': '%.2f',
+    },
+]
+
+ANTIBODY_Q30_METRICS = [
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'bc_bases_with_q30_frac',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Q30 Bases in Barcode',
+        'description': 'Fraction of cell barcode bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'read_bases_with_q30_frac',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Q30 Bases in Antibody Read',
+        'description': 'Fraction of ANTIBODY read bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator. This is Read 2 for the Single Cell 3\' v2 chemistry.',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'read2_bases_with_q30_frac',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Q30 Bases in ANTIBODY Read 2',
+        'description': 'Fraction of ANTIBODY read 2 bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'sample_index_bases_with_q30_frac',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Q30 Bases in Sample Index',
+        'description': 'Fraction of sample index bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'umi_bases_with_q30_frac',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Q30 Bases in UMI',
+        'description': 'Fraction of UMI bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+    },
+    ]
+
+
+ANTIBODY_SEQUENCING_METRICS = [
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'total_reads',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Number of Reads',
+        'description': 'Total number of reads',
+        'format': 'integer',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'reads_per_cell',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Mean Reads per Cell',
+        'description': 'The total number of sequenced reads divided by the number of barcodes associated with cell-containing partitions.',
+        'format': 'integer',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'good_bc_frac',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Valid Barcodes',
+        'description': 'Fraction of reads with a barcode found in or corrected to one that is found in the whitelist',
+        'format': 'percent',
+    },
+    {
+     	'name': REPORT_PREFIX_ANTIBODY + 'reads_lost_to_highly_corrected_GEMs',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Fraction Reads in Barcodes with High UMI Correction Rate',
+        'description': 'Fraction of reads that was lost after removing barcodes with high UMI corrrection rates',
+        'format': 'percent',
+    },
+    ] + ANTIBODY_Q30_METRICS
+
+ANTIBODY_APPLICATION_METRICS = [
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'multi_transcriptome_conf_mapped_reads_frac',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Fraction Antibody Reads',
+        'description': 'Fraction of reads that contain a recognized antibody barcode',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'frac_feature_reads_usable',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Fraction Antibody Reads Usable',
+        'description': 'Fraction of reads that contain a recognized antibody barcode, a valid UMI, and a cell-associated barcode',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'feature_reads_usable_per_cell',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Antibody Reads Usable per Cell',
+        'description': 'Number of antibody reads usable divided by the number of cell-associated barcodes',
+        'format': '%.0f',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'unrecognized_feature_bc_frac',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Fraction Unrecognized Antibody',
+        'description': 'Among all reads, the fraction with an unrecognizable antibody barcode',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'feature_reads_in_cells',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Antibody Reads in Cells',
+        'description': 'Among reads with a recognized antibody barcode, a valid UMI, and a valid barcode, the fraction associated with cell-containing partitions',
+        'format': 'percent',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'multi_filtered_bcs_median_counts',
+        'display_name': DISPLAY_PREFIX_ANTIBODY + 'Median UMIs per Cell (summed over all recognized antibody barcodes)',
+        'description': 'Median UMIs per Cell (summed over all recognized antibody barcodes)',
+        'format': '%.2f',
+    },
+]
+
+CUSTOM_FEATURE_Q30_METRICS = [
+    {
+        'name': 'bc_bases_with_q30_frac',
+        'display_name': '%s: Q30 Bases in Barcode',
+        'description': 'Fraction of cell barcode bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+        'prefix': 'custom_features',
+    },
+    {
+        'name': 'read_bases_with_q30_frac',
+        'display_name': '%s: Q30 Bases in Feature Read',
+        'description': 'Fraction of feature read bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator. This is Read 2 for the Single Cell 3\' v2 chemistry.',
+        'format': 'percent',
+        'prefix': 'custom_features',
+    },
+    {
+        'name': 'read2_bases_with_q30_frac',
+        'display_name': '%s: Q30 Bases in Feature Read 2',
+        'description': 'Fraction of feature read 2 bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+        'prefix': 'custom_features',
+    },
+    {
+        'name': 'sample_index_bases_with_q30_frac',
+        'display_name': '%s: Q30 Bases in Sample Index',
+        'description': 'Fraction of sample index bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+        'prefix': 'custom_features',
+    },
+    {
+        'name': 'umi_bases_with_q30_frac',
+        'display_name': '%s: Q30 Bases in UMI',
+        'description': 'Fraction of UMI bases with Q-score >= 30, excluding very low quality/no-call (Q <= 2) bases from the denominator.',
+        'format': 'percent',
+        'prefix': 'custom_features',
+    },
+    ]
+
+
+CUSTOM_FEATURE_SEQUENCING_METRICS = [
+    {
+        'name': 'total_reads',
+        'display_name': '%s: Number of Reads',
+        'description': 'Total number of reads',
+        'format': 'integer',
+        'prefix': 'custom_features',
+    },
+    {
+        'name': 'reads_per_cell',
+        'display_name': '%s: Mean Reads per Cell',
+        'description': 'The total number of sequenced reads divided by the number of barcodes associated with cell-containing partitions.',
+        'format': 'integer',
+        'prefix': 'custom_features',
+    },
+    {
+        'name': 'good_bc_frac',
+        'display_name': '%s: Valid Barcodes',
+        'description': 'Fraction of reads with a barcode found in or corrected to one that is found in the whitelist',
+        'format': 'percent',
+        'prefix': 'custom_features',
+    },
+    ] + CUSTOM_FEATURE_Q30_METRICS
+
+CUSTOM_FEATURE_APPLICATION_METRICS = [
+    {
+        'name': 'multi_transcriptome_conf_mapped_reads_frac',
+        'display_name': '%s: Fraction Feature Reads',
+        'description': 'Fraction of reads that contain a recognized feature barcode',
+        'format': 'percent',
+        'prefix': 'custom_features',
+    },
+    {
+        'name': 'frac_feature_reads_usable',
+        'display_name': '%s: Fraction Feature Reads Usable',
+        'description': 'Fraction of reads that contain a recognized feature barcode, a valid UMI, and a cell-associated barcode',
+        'format': 'percent',
+        'prefix': 'custom_features',
+    },
+    {
+        'name': 'feature_reads_usable_per_cell',
+        'display_name': '%s: Feature Reads Usable per Cell',
+        'description': 'Number of feature reads usable divided by the number of cell-associated barcodes',
+        'format': '%.0f',
+        'prefix': 'custom_features',
+    },
+    {
+        'name': 'unrecognized_feature_bc_frac',
+        'display_name': '%s: Fraction Unrecognized Feature',
+        'description': 'Among all reads, the fraction with an unrecognizable feature barcode',
+        'format': 'percent',
+        'prefix': 'custom_features',
+    },
+    {
+        'name': 'feature_reads_in_cells',
+        'display_name': '%s: Feature Reads in Cells',
+        'description': 'Among reads with a recognized feature barcode, a valid UMI, and a valid barcode, the fraction associated with cell-containing partitions',
+        'format': 'percent',
+        'prefix': 'custom_features',
+    },
+    {
+        'name': 'multi_filtered_bcs_median_counts',
+        'display_name': '%s: Median UMIs per Cell (summed over all recognized feature barcodes)',
+        'description': 'Median UMIs per Cell (summed over all recognized feature barcodes)',
+        'format': '%.2f',
+        'prefix': 'custom_features',
+    },
+]
+
 SEQUENCING_METRICS = [
     TOTAL_READS_METRIC,
     PRENORM_READS_METRIC,
     POSTNORM_READS_METRIC,
     GOOD_BCS_METRIC,
-    TRANSCRIPTOME_CONF_MAPPED_READS_METRIC,
-    EXONIC_CONF_MAPPED_READS_METRIC,
-    INTRONIC_CONF_MAPPED_READS_METRIC,
-    INTERGENIC_CONF_MAPPED_READS_METRIC,
-    ANTISENSE_CONF_MAPPED_READS_METRIC,
     CDNA_DUPE_FRAC_METRIC,
     SEQUENCING_SATURATION_METRIC,
 ] + Q30_METRICS
 
+MAPPING_METRICS = [
+    MULTI_GENOME_MAPPED_READS_METRIC,
+    GENOME_MAPPED_READS_METRIC,
+    MULTI_GENOME_CONF_MAPPED_READS_METRIC,
+    GENOME_CONF_MAPPED_READS_METRIC,
+    MULTI_INTERGENIC_CONF_MAPPED_READS_METRIC,
+    INTERGENIC_CONF_MAPPED_READS_METRIC,
+    MULTI_INTRONIC_CONF_MAPPED_READS_METRIC,
+    INTRONIC_CONF_MAPPED_READS_METRIC,
+    MULTI_EXONIC_CONF_MAPPED_READS_METRIC,
+    EXONIC_CONF_MAPPED_READS_METRIC,
+    MULTI_TRANSCRIPTOME_CONF_MAPPED_READS_METRIC,
+    TRANSCRIPTOME_CONF_MAPPED_READS_METRIC,
+    ANTISENSE_CONF_MAPPED_READS_METRIC,
+]
+
 DETECTED_CELL_METRICS = [
     MULTI_NUMBER_OF_DETECTED_CELLS_METRIC,
     NUMBER_OF_DETECTED_CELLS_METRIC,
+    MULTI_FRAC_READS_IN_CELLS_METRIC,
     FRAC_READS_IN_CELLS_METRIC,
     READS_PER_DETECTED_CELL_METRIC,
     PRENORM_READS_PER_CELL_METRIC,
@@ -344,6 +762,94 @@ AGGREGATION_METRICS = [
     },
 ]
 
+CRISPR_AGGREGATION_METRICS = [
+    {
+        'name': REPORT_PREFIX_CRISPR + 'frac_reads_kept',
+        'display_name': '%s Fraction of Reads Kept',
+        'description': 'The fraction of reads kept for this input sample, after normalizing depth across samples to reduce batch effects.',
+        'format': 'percent',
+        'prefix': 'agg_batches',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'pre_normalization_raw_reads_per_filtered_bc',
+        'display_name': '%s Pre-Normalization Total Reads per Cell',
+        'description': 'The mean number of total sequencing reads per cell in this input sample, prior to depth normalization.',
+        'format': 'integer',
+        'prefix': 'agg_batches',
+    },
+    {
+        'name': REPORT_PREFIX_CRISPR + 'pre_normalization_cmb_reads_per_filtered_bc',
+        'display_name': '%s Pre-Normalization Confidently Mapped Barcoded Reads per Cell',
+        'description': 'The mean number of confidently-mapped-to-transcriptome, valid-barcode reads per cell in this input sample, prior to depth normalization.',
+        'format': 'integer',
+        'prefix': 'agg_batches',
+    },
+]
+
+ANTIBODY_AGGREGATION_METRICS = [
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'frac_reads_kept',
+        'display_name': '%s Fraction of Reads Kept',
+        'description': 'The fraction of reads kept for this input sample, after normalizing depth across samples to reduce batch effects.',
+        'format': 'percent',
+        'prefix': 'agg_batches',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'pre_normalization_raw_reads_per_filtered_bc',
+        'display_name': '%s Pre-Normalization Total Reads per Cell',
+        'description': 'The mean number of total sequencing reads per cell in this input sample, prior to depth normalization.',
+        'format': 'integer',
+        'prefix': 'agg_batches',
+    },
+    {
+        'name': REPORT_PREFIX_ANTIBODY + 'pre_normalization_cmb_reads_per_filtered_bc',
+        'display_name': '%s Pre-Normalization Confidently Mapped Barcoded Reads per Cell',
+        'description': 'The mean number of confidently-mapped-to-transcriptome, valid-barcode reads per cell in this input sample, prior to depth normalization.',
+        'format': 'integer',
+        'prefix': 'agg_batches',
+    },
+]
+
+CUSTOM_FEATURE_AGGREGATION_METRICS = [
+    {
+        'name': rna_library.CUSTOM_LIBRARY_TYPE_PREFIX + '_frac_reads_kept',
+        'display_name': '%s Fraction of Reads Kept',
+        'description': 'The fraction of reads kept for this input sample, after normalizing depth across samples to reduce batch effects.',
+        'format': 'percent',
+        'prefix': 'agg_batches',
+    },
+    {
+        'name': rna_library.CUSTOM_LIBRARY_TYPE_PREFIX + '_pre_normalization_raw_reads_per_filtered_bc',
+        'display_name': '%s Pre-Normalization Total Reads per Cell',
+        'description': 'The mean number of total sequencing reads per cell in this input sample, prior to depth normalization.',
+        'format': 'integer',
+        'prefix': 'agg_batches',
+    },
+    {
+        'name': rna_library.CUSTOM_LIBRARY_TYPE_PREFIX + '_pre_normalization_cmb_reads_per_filtered_bc',
+        'display_name': '%s Pre-Normalization Confidently Mapped Barcoded Reads per Cell',
+        'description': 'The mean number of confidently-mapped-to-transcriptome, valid-barcode reads per cell in this input sample, prior to depth normalization.',
+        'format': 'integer',
+        'prefix': 'agg_batches',
+    },
+]
+
+# Note: these metrics only apply when batch correction is enabled
+CHEMISTRY_BATCH_CORRECTION_METRICS = [
+    {
+        'name': 'batch_effect_score_before_correction',
+        'display_name': 'Batch Effect Score before Correction',
+        'description': 'Before chemistry batch correction, the average fraction of 100 nearest neighbors belonging to the same batch, normalized by the expected value without batch effect.',
+        'format': '%.2f',
+    },
+    {
+        'name': 'batch_effect_score_after_correction',
+        'display_name': 'Batch Effect Score after Correction',
+        'description': 'After chemistry batch correction, the average fraction of 100 nearest neighbors belonging to the same batch, normalized by the expected value without batch effect.',
+        'format': '%.2f',
+    },
+]
+
 METRICS = [
     {
         'name': 'Summary',
@@ -354,8 +860,20 @@ METRICS = [
         'metrics': SEQUENCING_METRICS,
     },
     {
+        'name': 'Mapping',
+        'metrics': MAPPING_METRICS,
+    },
+    {
         'name': 'Cells',
         'metrics': DETECTED_CELL_METRICS,
+    },
+    {
+        'name': 'CRISPR Sequencing',
+        'metrics': CRISPR_SEQUENCING_METRICS,
+    },
+    {
+        'name': 'CRISPR Application',
+        'metrics': CRISPR_APPLICATION_METRICS,
     },
     {
         'name': 'GEM Partitions',
@@ -364,6 +882,39 @@ METRICS = [
     {
         'name': 'Aggregation',
         'metrics': AGGREGATION_METRICS,
+    },
+    {
+        'name': 'CRISPR Aggregation',
+        'metrics': CRISPR_AGGREGATION_METRICS,
+    },
+    {
+        'name': 'Antibody Aggregation',
+        'metrics': ANTIBODY_AGGREGATION_METRICS,
+    },
+    {
+        'name': 'Feature Aggregation',
+        'metrics': CUSTOM_FEATURE_AGGREGATION_METRICS,
+    },
+    {
+        'name': 'Antibody Sequencing',
+        'metrics': ANTIBODY_SEQUENCING_METRICS,
+    },
+    {
+        'name': 'Antibody Application',
+        'metrics': ANTIBODY_APPLICATION_METRICS,
+    },
+    # Non- (CRISPR or Antibody) feature metrics
+    {
+        'name': 'Feature Sequencing',
+        'metrics': CUSTOM_FEATURE_SEQUENCING_METRICS,
+    },
+    {
+        'name': 'Feature Application',
+        'metrics': CUSTOM_FEATURE_APPLICATION_METRICS,
+    },
+    {
+        'name': 'Chemistry Batch Correction',
+        'metrics': CHEMISTRY_BATCH_CORRECTION_METRICS,
     },
 ]
 
@@ -384,35 +935,10 @@ CHARTS = [
                 'type': 'log',
             },
         },
-        'data': [
-            {
-                'x': [],
-                'y': [],
-                'name': 'Cells',
-                'hoverinfo': 'name',
-                'type': 'scattergl',
-                'mode': 'lines',
-                'line': {
-                    'color': 'rgba(88,165,50,1.0)',
-                    'width': 3,
-                },
-            },
-            {
-                'x': [],
-                'y': [],
-                'name': 'Background',
-                'hoverinfo': 'name',
-                'type': 'scattergl',
-                'mode': 'lines',
-                'line': {
-                    'color': '#bdbdbd',
-                    'width': 3,
-                },
-            },
-        ],
+        'data': [],
         'config': shared.CHARTS_PLOTLY_FIXED_CONFIG,
         'function': 'plot_barcode_rank',
-        'description': '',
+        'description': 'The plot shows the count of filtered UMIs mapped to each barcode.  Barcodes can be determined to be cell-associated based on their UMI counts or by their expression profiles. Therefore some regions of the graph can contain both cell-associated and background-associated barcodes. The color of the graph represents the local density of barcodes that are cell-associated.',
         'name': 'barcode_rank',
     },
     {
@@ -585,12 +1111,12 @@ METRIC_ALARMS = [
         'format': GOOD_BCS_METRIC['format'],
         'error': {
             'title': 'Low Fraction Valid Barcodes',
-            'message': 'Ideal > 75%. This usually indicates a quality issue with the Ilumina I7 read for Single Cell 3\' v1 or the R1 read for Single Cell 3\' v2. Application performance is likely to be affected.',
+            'message': 'Ideal > 75%. This may indicate a quality issue with the Illumina I7 read for Single Cell 3\' v1 or the R1 read for Single Cell 3\' v2/v3 and Single Cell 5\'. Application performance is likely to be affected.',
             'test': '< 0.5',
         },
         'warn': {
             'title': 'Low Fraction Valid Barcodes',
-            'message': 'Ideal > 75%. This usually indicates a quality issue with the Illumina I7 read for Single Cell 3\' v1 or the R1 read for Single Cell 3\' v2. Application performance may be affected.',
+            'message': 'Ideal > 75%. This may indicate a quality issue with the Illumina I7 read for Single Cell 3\' v1 or the R1 read for Single Cell 3\' v2/v3 and Single Cell 5\'. Application performance may be affected.',
             'test': '< 0.75',
         },
     },
@@ -599,12 +1125,12 @@ METRIC_ALARMS = [
         'format': GOOD_UMIS_METRIC['format'],
         'error': {
             'title': 'Low Fraction Valid UMIs',
-            'message': 'Ideal > 75%. This usually indicates a quality issue with the Ilumina R2 read for Single Cell 3\' v1 or the R1 read for Single Cell 3\' v2. Application performance is likely to be affected.',
+            'message': 'Ideal > 75%. This may indicate a quality issue with the Illumina R2 read for Single Cell 3\' v1 or the R1 read for Single Cell 3\' v2/v3 and Single Cell 5\'. Application performance is likely to be affected.',
             'test': '< 0.5',
                     },
         'warn': {
             'title': 'Low Fraction Valid UMIs',
-            'message': 'Ideal > 75%. This usually indicates a quality issue with the Illumina R2 read for Single Cell 3\' v1 or the R1 read for Single Cell 3\' v2. Application performance may be affected.',
+            'message': 'Ideal > 75%. This may indicate a quality issue with the Illumina R2 read for Single Cell 3\' v1 or the R1 read for Single Cell 3\' v2/v3 and Single Cell 5\'. Application performance may be affected.',
             'test': '< 0.75',
         },
     },
@@ -640,12 +1166,12 @@ METRIC_ALARMS = [
         'name': 'bc_bases_with_q30_frac',
         'format': 'percent',
         'error': {
-            'title': 'Low Barcode Q30 Fraction (Illumina I7 Read for Single Cell 3\' v1, R1 for Single Cell 3\' v2)',
+            'title': 'Low Barcode Q30 Fraction (Illumina I7 Read for Single Cell 3\' v1, R1 for Single Cell 3\' v2/v3 and Single Cell 5\')',
             'message': 'Ideal > 55%. Application performance is likely to be affected.',
             'test': '< 0.45',
         },
         'warn': {
-            'title': 'Low Barcode Q30 Fraction (Illumina I7 Read for Single Cell 3\' v1, R1 for Single Cell 3\' v2)',
+            'title': 'Low Barcode Q30 Fraction (Illumina I7 Read for Single Cell 3\' v1, R1 for Single Cell 3\' v2/v3 and Single Cell 5\')',
             'message': 'Ideal > 55%. Application performance may be affected.',
             'test': '< 0.55',
         },
@@ -654,12 +1180,12 @@ METRIC_ALARMS = [
         'name': 'read_bases_with_q30_frac',
         'format': 'percent',
         'error': {
-            'title': 'Low RNA Read Q30 Fraction (Illumina R1 for Single Cell 3\' v1, R2 for Single Cell 3\' v2)',
+            'title': 'Low RNA Read Q30 Fraction (Illumina R1 for Single Cell 3\' v1 and Single Cell 5\' paired end, R2 for Single Cell 3\' v2/v3 and Single Cell 5\' R2-only)',
             'message': 'Ideal > 65%. Application performance is likely to be affected.',
             'test': '< 0.55',
         },
         'warn': {
-            'title': 'Low RNA Read Q30 Fraction (Illumina R1 for Single Cell 3\' v1, R2 for Single Cell 3\' v2)',
+            'title': 'Low RNA Read Q30 Fraction (Illumina R1 for Single Cell 3\' v1 and Single Cell 5\' paired end, R2 for Single Cell 3\' v2/v3 and Single Cell 5\' R2-only)',
             'message': 'Ideal > 65%. Application performance may be affected.',
             'test': '< 0.65',
         },
@@ -668,12 +1194,12 @@ METRIC_ALARMS = [
         'name': 'sample_index_bases_with_q30_frac',
         'format': 'percent',
         'error': {
-            'title': 'Low Sample Index Q30 Fraction (Illumina I5 Read for Single Cell 3\' v1, I7 for Single Cell 3\' v2)',
+            'title': 'Low Sample Index Q30 Fraction (Illumina I5 Read for Single Cell 3\' v1, I7 for Single Cell 3\' v2/v3 and Single Cell 5\')',
             'message': 'Ideal > 80%. Application performance is likely to be affected.',
             'test': '< 0.7',
         },
         'warn': {
-            'title': 'Low Sample Index Q30 Fraction (Illumina I5 Read for Single Cell 3\' v1, I7 for Single Cell 3\' v2)',
+            'title': 'Low Sample Index Q30 Fraction (Illumina I5 Read for Single Cell 3\' v1, I7 for Single Cell 3\' v2/v3 and Single Cell 5\')',
             'message': 'Ideal > 80%. Application performance may be affected.',
             'test': '< 0.8',
         },
@@ -682,12 +1208,12 @@ METRIC_ALARMS = [
         'name': 'umi_bases_with_q30_frac',
         'format': 'percent',
         'error': {
-            'title': 'Low UMI Q30 Fraction (Illumina R2 Read for Single Cell 3\' v1, R1 for Single Cell 3\' v2)',
+            'title': 'Low UMI Q30 Fraction (Illumina R2 Read for Single Cell 3\' v1, R1 for Single Cell 3\' v2/v3 and Single Cell 5\')',
             'message': 'Ideal > 75%. Application performance is likely to be affected.',
             'test': '< 0.65',
         },
         'warn': {
-            'title': 'Low UMI Q30 Fraction (Illumina R2 Read for Single Cell 3\' v1, R1 for Single Cell 3\' v2)',
+            'title': 'Low UMI Q30 Fraction (Illumina R2 Read for Single Cell 3\' v1, R1 for Single Cell 3\' v2/v3 and Single Cell 5\')',
             'message': 'Ideal > 75%. Application performance may be affected.',
             'test': '< 0.75',
         },

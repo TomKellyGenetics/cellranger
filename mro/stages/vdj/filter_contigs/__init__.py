@@ -7,8 +7,10 @@
 import itertools
 import os
 import tenkit.fasta as tk_fasta
-import cellranger.constants as cr_constants
+import cellranger.library_constants as lib_constants
+import cellranger.h5_constants as h5_constants
 import cellranger.utils as cr_utils
+import cellranger.io as cr_io
 import cellranger.vdj.annotations as vdj_annot
 import cellranger.vdj.constants as vdj_constants
 import cellranger.vdj.report as vdj_report
@@ -29,8 +31,10 @@ stage FILTER_CONTIGS(
 )
 """
 
+EXTRA_CONTIG_MIN_UMI_RATIO = 0.2
+
 def split(args):
-    mem_gb = max(cr_constants.MIN_MEM_GB,
+    mem_gb = max(h5_constants.MIN_MEM_GB,
                  vdj_utils.get_mem_gb_from_annotations_json(args.contig_annotations))
     return {
         'chunks': [{'__mem_gb': mem_gb}],
@@ -50,6 +54,7 @@ def main(args, outs):
 
     for (bc, chain), group in itertools.groupby(contigs, key=lambda c: (c.barcode, c.get_single_chain())):
         first_cdr3 = None
+        first_cdr3_umis = None
         seen_cdr3s = set()
 
         for contig in group:
@@ -60,13 +65,15 @@ def main(args, outs):
 
             if first_cdr3 is None:
                 first_cdr3 = contig.cdr3_seq
+                first_cdr3_umis = contig.umi_count
 
             # Mark as low confidence:
             # 1) Any additional CDR3s beyond the highest-(productive,UMI,read,length) contig's CDR3
-            #    with a single UMI, or
+            #    with a single UMI or low UMIs relative to the first contig, or
             extraneous_cdr3 = first_cdr3 is not None \
                and contig.cdr3_seq != first_cdr3 \
-               and contig.umi_count == 1
+               and (contig.umi_count == 1 or \
+                    (float(contig.umi_count) / first_cdr3_umis) < EXTRA_CONTIG_MIN_UMI_RATIO)
 
             # 2) Any contigs with a repeated CDR3.
             repeat_cdr3 = contig.cdr3_seq in seen_cdr3s
@@ -79,7 +86,7 @@ def main(args, outs):
 
             if chain in vdj_constants.VDJ_GENES:
                 reporter._get_metric_attr('vdj_high_conf_prod_contig_frac', chain).add(1, filter=contig.high_confidence)
-            reporter._get_metric_attr('vdj_high_conf_prod_contig_frac', cr_constants.MULTI_REFS_PREFIX).add(1, filter=contig.high_confidence)
+            reporter._get_metric_attr('vdj_high_conf_prod_contig_frac', lib_constants.MULTI_REFS_PREFIX).add(1, filter=contig.high_confidence)
 
     # Write augmented contig annotations
     with open(outs.contig_annotations, 'w') as f:
@@ -113,6 +120,6 @@ def join(args, outs, chunk_defs, chunk_outs):
         src = getattr(chunk_outs[0], out_name)
         dest = getattr(outs, out_name)
         if os.path.isfile(src):
-            cr_utils.copy(src, dest)
+            cr_io.copy(src, dest)
         else:
             setattr(outs, out_name, None)

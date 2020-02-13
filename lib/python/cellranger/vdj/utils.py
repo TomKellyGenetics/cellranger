@@ -3,6 +3,7 @@
 # Copyright (c) 2017 10X Genomics, Inc. All rights reserved.
 #
 
+import itertools
 import json
 import numpy as np
 import os
@@ -10,6 +11,7 @@ import pandas as pd
 import pysam
 import sys
 import tenkit.bam as tk_bam
+import tenkit.cache as tk_cache
 import cellranger.constants as cr_constants
 import cellranger.fastq as cr_fastq
 import cellranger.vdj.constants as vdj_constants
@@ -106,7 +108,7 @@ def format_clonotype_id(clonotype_index, inferred):
 
 def get_mem_gb_from_annotations_json(filename):
     """ Estimate mem request for loading an entire annotations json into memory """
-    return vdj_constants.MEM_GB_PER_ANNOTATIONS_JSON_GB * float(os.path.getsize(filename))/1e9
+    return int(np.ceil(vdj_constants.MEM_GB_PER_ANNOTATIONS_JSON_GB * float(os.path.getsize(filename))/1e9))
 
 def concatenate_and_fix_bams(out_bamfile, bamfiles, drop_tags=None):
     """Concatenate bams with different references and populate tags.
@@ -120,13 +122,11 @@ def concatenate_and_fix_bams(out_bamfile, bamfiles, drop_tags=None):
     - drop_tags: Set of tag names to ignore. If None, than all tags will be included.
     """
     template_bam = pysam.Samfile(bamfiles[0])
-    header = template_bam.header
+    header = tk_bam.get_bam_header_as_dict(template_bam)
 
     for bam_fn in bamfiles[1:]:
         bam = pysam.Samfile(bam_fn)
         header['SQ'].extend(bam.header['SQ'])
-
-    refname_to_tid = { ref_head['SN']:idx for (idx, ref_head) in enumerate(header['SQ']) }
 
     bam_out = pysam.Samfile(out_bamfile, "wb", header=header)
 
@@ -134,18 +134,19 @@ def concatenate_and_fix_bams(out_bamfile, bamfiles, drop_tags=None):
         bam = pysam.Samfile(bam_fn)
 
         for rec in bam:
-            if rec.is_unmapped and rec.mate_is_unmapped:
-                rec.reference_id = -1
-                rec.next_reference_id = -1
-            elif rec.is_unmapped and not rec.mate_is_unmapped:
-                rec.next_reference_id = refname_to_tid[bam.references[rec.next_reference_id]]
+            # Convert to string and back to replace the old tid with the new one
+            # This appears to be the only way to do this with pysam (sometime after 0.9)
+            rec = pysam.AlignedSegment.fromstring(rec.to_string(),
+                                                  header=pysam.AlignmentHeader.from_dict(header))
+
+            # I don't know why we do this.
+            if rec.is_unmapped and not rec.mate_is_unmapped:
                 rec.reference_id = rec.next_reference_id
             elif not rec.is_unmapped and rec.mate_is_unmapped:
-                rec.reference_id = refname_to_tid[bam.references[rec.reference_id]]
                 rec.next_reference_id = rec.reference_id
-            else:
-                rec.reference_id = refname_to_tid[bam.references[rec.reference_id]]
-                rec.next_reference_id = refname_to_tid[bam.references[rec.next_reference_id]]
+            elif rec.is_unmapped and rec.mate_is_unmapped:
+                rec.reference_id = -1
+                rec.next_reference_id = -1
 
             # Pull fields out of qname, and make tags, writing out to bam_out
             qname_split = rec.qname.split(cr_fastq.AugmentedFastqHeader.TAG_SEP)
@@ -170,3 +171,89 @@ def bam_has_seqs(filename):
         return True
     except ValueError:
         return False
+
+""" Generator that streams items from a list of dicts [{}, {},...] """
+def get_json_obj_iter(f):
+        brace_count = 0
+        x = ''
+        in_str = False
+        # Track the number of consecutive backslashes encountered preceding this char
+        backslash_count = 0
+        bufsize = 4096
+
+        while True:
+            buf = f.read(bufsize)
+            if len(buf) == 0:
+                return
+            for c in buf:
+                # Handle escaped quotes, possibly preceded by escaped backslashes
+                # "foo\" => stay in string, 'foo"...'
+                # "foo\\" => leave string, 'foo\'
+                # "foo\\\" => stay in string, 'foo\"...'
+                if c == '"' and (backslash_count % 2) == 0:
+                    in_str = not in_str
+
+                if c == '\\':
+                    backslash_count += 1
+                else:
+                    backslash_count = 0
+
+                if not in_str:
+                    if c.isspace():
+                        continue
+                    if brace_count == 0 and c == '{':
+                        brace_count = 1
+                    elif brace_count == 1 and c == '}':
+                        brace_count = 0
+                    elif c == '{' or c == '}':
+                        brace_count += 1 if c == '{' else -1
+                if brace_count != 0 or len(x) > 0:
+                    x += c
+
+                if brace_count == 0 and len(x) > 0:
+                    yield json.loads(x)
+                    x = ''
+
+""" Streams a list of dicts as json to a file """
+class JsonDictListWriter(object):
+    def __init__(self, fh):
+        """ fh - file handle """
+        # Track whether we need to prepend with a comma
+        self.wrote_any = False
+        # Start the list
+        fh.write('[\n')
+
+    def write(self, x, fh):
+        """ Write a dict """
+        if self.wrote_any:
+            fh.write('\n,')
+        json.dump(x, fh)
+        self.wrote_any = True
+
+    def finish(self, fh):
+        """ Finish writing all dicts """
+        # End the list
+        fh.write('\n]')
+
+class CachedJsonDictListWriters(object):
+    """ Stream multiple json DictLists, using a FileHandleCache
+        to limit the number of open file handles.
+        This is useful when you're writing to many files from the same process
+        (e.g., in a 'split' job) """
+    def __init__(self, filenames):
+        """ filenames list(str) - list of filenames to write to """
+        self.filenames = filenames
+        self.cache = tk_cache.FileHandleCache(mode='w')
+        self.writers = [JsonDictListWriter(self.cache.get(fn)) for fn in filenames]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, e_type, e_val, e_tb):
+        for writer, filename in itertools.izip(self.writers, self.filenames):
+            writer.finish(self.cache.get(filename))
+
+    def write(self, d, file_idx):
+        """ d (dict) - data to write
+            file_idx (int) - index of filename/writer in original given list """
+        self.writers[file_idx].write(d, self.cache.get(self.filenames[file_idx]))

@@ -12,8 +12,8 @@ filetype html;
 filetype pickle;
 
 stage AGGREGATOR_PREFLIGHT(
-    in map[]  sample_defs,
-    in string normalization_mode,
+    in  map[]  sample_defs,
+    in  string normalization_mode,
     src py     "stages/aggregator/aggregator_preflight",
 )
 
@@ -27,72 +27,94 @@ stage PARSE_CSV(
     src py    "stages/aggregator/parse_csv",
 )
 
+stage CHECK_MOLECULE_INFO_VERSION(
+    in  map[] sample_defs,
+    out map[] updated_sample_defs,
+    src py    "stages/aggregator/check_molecule_info_version",
+) split (
+    in  int   mol_h5_version,
+    in  map   sample_def,
+    out map   updated_sample_def,
+)
+
 stage SETUP_SAMPLES(
     in  map[] sample_defs,
     out map   gem_group_index,
+    out map[] libraries,
     out json  gem_group_index_json,
+    out bool  chemistry_batch_correction,
     src py    "stages/aggregator/setup_samples",
-)
-
-stage COUNT_GENES_FROM_MOLECULES(
-    in  map  gem_group_index,
-    in  h5   raw_molecules,
-    in  csv  filtered_barcodes,
-    out h5   filtered_molecules,
-    out h5   raw_matrices_h5,
-    out h5   filtered_matrices_h5,
-    out h5   barcode_summary_h5,
-    out path raw_matrices_mex,
-    out path filtered_matrices_mex,
-    out json summary,
-    src py   "stages/aggregator/count_genes",
-) split using (
-    in  int  chunk_start,
-    in  int  chunk_len,
-)
-
-stage DETECT_CELLS(
-    in  h5[]  molecule_chunks,
-    out csv   cell_barcodes,
-    out map   gem_group_metrics,
-    src py    "stages/aggregator/detect_cells",
-) split using (
-    in  h5    molecule_h5,
-    in  int   chunk_start,
-    in  int   chunk_len,
-    in  int   gem_group,
-    in  int   recovered_cells,
-    in  int   force_cells,
 )
 
 stage MERGE_MOLECULES(
     in  map[]  sample_defs,
-    in  map    gem_group_index,
+    in  map[]  libraries,
     out h5     merged_molecules,
-    out h5[]   chunked_molecules,
+    out map    gem_group_barcode_ranges,
     src py     "stages/aggregator/merge_molecules",
-) split using (
-    in  string library_id,
+) split (
+    in  string aggr_id,
     in  h5     molecule_h5,
+    in  int    barcode_idx_offset,
+    in  int    barcode_idx_end,
+    in  pickle merged_barcodes,
+    out int[]  new_gem_groups,
+    out h5     molecule_h5,
+) using (
+    mem_gb = 8,
 )
 
 stage NORMALIZE_DEPTH(
-    in  h5     molecules,
-    in  map    detect_cells_gg_metrics,
-    in  string normalization_mode,
-    out h5     out_molecules,
-    out json   summary,
-    src py     "stages/aggregator/normalize_depth",
-) split using (
-    in  bool   downsample,
-    in  int    chunk_start,
-    in  int    chunk_len,
-    in  map    downsample_map,
+    in  map     gem_group_index,
+    in  h5      molecules,
+    in  string  normalization_mode,
+    in  map     gem_group_barcode_ranges,
+    out h5[]    raw_matrices_h5,
+    out int     raw_nnz,
+    out h5[]    filtered_matrices_h5,
+    out int     filtered_nnz,
+    out json    summary,
+    src py      "stages/aggregator/normalize_depth",
+) split (
+    in  float[] frac_reads_kept,
+    in  int[]   num_cells,
+    in  int     chunk_start,
+    in  int     chunk_len,
+    out json    chunk_summary,
+    out h5      raw_matrix_h5,
+    out h5      filtered_matrix_h5,
+)
+
+stage WRITE_MATRICES(
+    in  map[] sample_defs,
+    in  map   gem_group_index,
+    in  h5    molecules,
+    in  h5[]  raw_matrices_h5,
+    in  int   raw_nnz,
+    in  h5[]  filtered_matrices_h5,
+    in  int   filtered_nnz,
+    in  json  summary,
+    out h5    raw_matrix_h5,
+    out path  raw_matrix_mex,
+    out h5    filtered_matrix_h5,
+    out path  filtered_matrix_mex,
+    out h5    barcode_summary_h5,
+    out json  summary,
+    src py    "stages/aggregator/write_matrices",
+) split (
+)
+
+stage CHECK_INVARIANTS(
+    in  map[] input_sample_defs,
+    in  h5    merged_raw_gene_bc_matrices_h5,
+    out json  summary,
+    src py    "stages/aggregator/check_invariants",
+) split (
 )
 
 stage SUMMARIZE_AGGREGATED_REPORTS(
-    in  string aggregation_id,
-    in  string aggregation_desc,
+    in  string sample_id,
+    in  string sample_desc,
     in  map    gem_group_index,
     in  h5     filtered_matrices_h5,
     in  h5     barcode_summary_h5,
@@ -103,5 +125,5 @@ stage SUMMARIZE_AGGREGATED_REPORTS(
     out json   summary,
     out html   web_summary,
     src py     "stages/aggregator/summarize_reports",
-) split using (
+) split (
 )

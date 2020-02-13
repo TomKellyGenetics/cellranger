@@ -1,9 +1,9 @@
-@include "_sc_rna_aggregator_stages.mro"
 @include "sc_rna_analyzer.mro"
+@include "_sc_rna_aggregator_stages.mro"
 
 pipeline SC_RNA_AGGREGATOR(
-    in  string aggregation_id,
-    in  string aggregation_desc,
+    in  string sample_id,
+    in  string sample_desc,
     in  map[]  sample_defs,
     in  string normalization_mode,
     in  bool   no_secondary_analysis,
@@ -11,6 +11,10 @@ pipeline SC_RNA_AGGREGATOR(
     in  int    num_pca_bcs,
     in  int    num_pca_genes,
     in  int    num_principal_comps,
+    in  int    cbc_knn,
+    in  float  cbc_alpha,
+    in  float  cbc_sigma,
+    in  bool   cbc_realign_panorama,
     in  int    max_clusters,
     in  int    graphclust_neighbors,
     in  float  neighbor_a,
@@ -27,9 +31,6 @@ pipeline SC_RNA_AGGREGATOR(
     out path   raw_gene_bc_matrices_mex,
     out h5     filtered_gene_bc_matrices_h5,
     out path   filtered_gene_bc_matrices_mex,
-    out h5     filtered_molecules,
-    out h5     raw_molecules,
-    out csv    cell_barcodes,
     out path   analysis,
     out path   analysis_csv,
     out json   analysis_summary,
@@ -38,81 +39,93 @@ pipeline SC_RNA_AGGREGATOR(
     out json   gem_group_index_json,
 )
 {
-    call preflight AGGREGATOR_PREFLIGHT(
+    call AGGREGATOR_PREFLIGHT(
         sample_defs        = self.sample_defs,
         normalization_mode = self.normalization_mode,
+    ) using (
+        preflight = true,
     )
 
-    call volatile SETUP_SAMPLES(
+    call SETUP_SAMPLES(
         sample_defs = self.sample_defs,
+    ) using (
+        volatile = true,
     )
 
-    call volatile MERGE_MOLECULES(
-        sample_defs     = self.sample_defs,
-        gem_group_index = SETUP_SAMPLES.gem_group_index,
-    )
-
-    call DETECT_CELLS(
-        molecule_chunks = MERGE_MOLECULES.chunked_molecules,
+    call MERGE_MOLECULES(
+        sample_defs = self.sample_defs,
+        libraries   = SETUP_SAMPLES.libraries,
+    ) using (
+        volatile = true,
     )
 
     call NORMALIZE_DEPTH(
-        normalization_mode      = self.normalization_mode,
-        detect_cells_gg_metrics = DETECT_CELLS.gem_group_metrics,
-        molecules               = MERGE_MOLECULES.merged_molecules,
+        gem_group_index          = SETUP_SAMPLES.gem_group_index,
+        normalization_mode       = self.normalization_mode,
+        molecules                = MERGE_MOLECULES.merged_molecules,
+        gem_group_barcode_ranges = MERGE_MOLECULES.gem_group_barcode_ranges,
     )
 
-    call COUNT_GENES_FROM_MOLECULES(
-        gem_group_index   = SETUP_SAMPLES.gem_group_index,
-        raw_molecules     = NORMALIZE_DEPTH.out_molecules,
-        filtered_barcodes = DETECT_CELLS.cell_barcodes,
+    call WRITE_MATRICES(
+        sample_defs          = self.sample_defs,
+        gem_group_index      = SETUP_SAMPLES.gem_group_index,
+        molecules            = MERGE_MOLECULES.merged_molecules,
+        raw_matrices_h5      = NORMALIZE_DEPTH.raw_matrices_h5,
+        filtered_matrices_h5 = NORMALIZE_DEPTH.filtered_matrices_h5,
+        raw_nnz              = NORMALIZE_DEPTH.raw_nnz,
+        filtered_nnz         = NORMALIZE_DEPTH.filtered_nnz,
+        summary              = NORMALIZE_DEPTH.summary,
     )
 
     call SC_RNA_ANALYZER(
-        no_secondary_analysis = self.no_secondary_analysis,
-        raw_matrices_h5       = COUNT_GENES_FROM_MOLECULES.raw_matrices_h5,
-        filtered_matrices_h5  = COUNT_GENES_FROM_MOLECULES.filtered_matrices_h5,
-        num_analysis_bcs      = self.num_analysis_bcs,
-        num_pca_bcs           = self.num_pca_bcs,
-        num_pca_genes         = self.num_pca_genes,
-        num_principal_comps   = self.num_principal_comps,
-        max_clusters          = self.max_clusters,
-        graphclust_neighbors  = self.graphclust_neighbors,
-        neighbor_a            = self.neighbor_a,
-        neighbor_b            = self.neighbor_b,
-        tsne_perplexity       = self.tsne_perplexity,
-        tsne_input_pcs        = self.tsne_input_pcs,
-        tsne_theta            = self.tsne_theta,
-        random_seed           = self.random_seed,
-        use_genes             = null,
-        use_bcs               = null,
-        tsne_max_dims         = self.tsne_max_dims,
-        tsne_max_iter         = self.tsne_max_iter,
-        tsne_stop_lying_iter  = self.tsne_stop_lying_iter,
-        tsne_mom_switch_iter  = self.tsne_mom_switch_iter,
-        force_cells           = null,
+        no_secondary_analysis      = self.no_secondary_analysis,
+        raw_matrices_h5            = WRITE_MATRICES.raw_matrix_h5,
+        filtered_matrices_h5       = WRITE_MATRICES.filtered_matrix_h5,
+        num_analysis_bcs           = self.num_analysis_bcs,
+        num_pca_bcs                = self.num_pca_bcs,
+        num_pca_genes              = self.num_pca_genes,
+        num_principal_comps        = self.num_principal_comps,
+        aggr_library_info          = SETUP_SAMPLES.libraries,
+        chemistry_batch_correction = SETUP_SAMPLES.chemistry_batch_correction,
+        cbc_knn                    = self.cbc_knn,
+        cbc_alpha                  = self.cbc_alpha,
+        cbc_sigma                  = self.cbc_sigma,
+        cbc_realign_panorama       = self.cbc_realign_panorama,
+        max_clusters               = self.max_clusters,
+        graphclust_neighbors       = self.graphclust_neighbors,
+        neighbor_a                 = self.neighbor_a,
+        neighbor_b                 = self.neighbor_b,
+        tsne_perplexity            = self.tsne_perplexity,
+        tsne_input_pcs             = self.tsne_input_pcs,
+        tsne_theta                 = self.tsne_theta,
+        random_seed                = self.random_seed,
+        use_genes                  = null,
+        exclude_genes              = null,
+        use_bcs                    = null,
+        tsne_max_dims              = self.tsne_max_dims,
+        tsne_max_iter              = self.tsne_max_iter,
+        tsne_stop_lying_iter       = self.tsne_stop_lying_iter,
+        tsne_mom_switch_iter       = self.tsne_mom_switch_iter,
+        force_cells                = null,
     )
 
     call SUMMARIZE_AGGREGATED_REPORTS(
-        aggregation_id           = self.aggregation_id,
-        aggregation_desc         = self.aggregation_desc,
+        sample_id                = self.sample_id,
+        sample_desc              = self.sample_desc,
         gem_group_index          = SETUP_SAMPLES.gem_group_index,
-        filtered_matrices_h5     = COUNT_GENES_FROM_MOLECULES.filtered_matrices_h5,
-        barcode_summary_h5       = COUNT_GENES_FROM_MOLECULES.barcode_summary_h5,
+        filtered_matrices_h5     = WRITE_MATRICES.filtered_matrix_h5,
+        barcode_summary_h5       = WRITE_MATRICES.barcode_summary_h5,
         analysis                 = SC_RNA_ANALYZER.analysis,
-        normalize_depth_summary  = NORMALIZE_DEPTH.summary,
-        count_genes_summary      = COUNT_GENES_FROM_MOLECULES.summary,
+        normalize_depth_summary  = WRITE_MATRICES.summary,
+        count_genes_summary      = WRITE_MATRICES.summary,
         analyze_matrices_summary = SC_RNA_ANALYZER.summary,
     )
 
     return (
-        filtered_molecules            = COUNT_GENES_FROM_MOLECULES.filtered_molecules,
-        filtered_gene_bc_matrices_h5  = COUNT_GENES_FROM_MOLECULES.filtered_matrices_h5,
-        filtered_gene_bc_matrices_mex = COUNT_GENES_FROM_MOLECULES.filtered_matrices_mex,
-        raw_molecules                 = NORMALIZE_DEPTH.out_molecules,
-        raw_gene_bc_matrices_h5       = COUNT_GENES_FROM_MOLECULES.raw_matrices_h5,
-        raw_gene_bc_matrices_mex      = COUNT_GENES_FROM_MOLECULES.raw_matrices_mex,
-        cell_barcodes                 = DETECT_CELLS.cell_barcodes,
+        filtered_gene_bc_matrices_h5  = WRITE_MATRICES.filtered_matrix_h5,
+        filtered_gene_bc_matrices_mex = WRITE_MATRICES.filtered_matrix_mex,
+        raw_gene_bc_matrices_h5       = WRITE_MATRICES.raw_matrix_h5,
+        raw_gene_bc_matrices_mex      = WRITE_MATRICES.raw_matrix_mex,
         analysis                      = SC_RNA_ANALYZER.analysis,
         analysis_csv                  = SC_RNA_ANALYZER.analysis_csv,
         analysis_summary              = SC_RNA_ANALYZER.summary,

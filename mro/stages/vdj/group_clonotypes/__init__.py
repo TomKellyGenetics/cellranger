@@ -6,12 +6,13 @@
 
 import os
 import cPickle
-import cellranger.constants as cr_constants
-import cellranger.utils as cr_utils
+import cellranger.h5_constants as h5_constants
+import cellranger.io as cr_io
 import cellranger.vdj.annotations as vdj_annot
 import cellranger.vdj.report as vdj_report
 import cellranger.vdj.utils as vdj_utils
 import tenkit.safe_json as tk_safe_json
+from cellranger.library_constants import MULTI_REFS_PREFIX
 
 __MRO__ = """
 stage GROUP_CLONOTYPES(
@@ -32,7 +33,7 @@ stage GROUP_CLONOTYPES(
 """
 
 def split(args):
-    mem_gb = max(cr_constants.MIN_MEM_GB,
+    mem_gb = max(h5_constants.MIN_MEM_GB,
                  vdj_utils.get_mem_gb_from_annotations_json(args.annotations))
     return {
         'chunks': [{'__mem_gb': mem_gb}],
@@ -129,6 +130,13 @@ def main(args, outs):
         filtered_contigs = filter(lambda x: x.high_confidence and x.is_cell, all_contigs)
         vdj_annot.save_contig_list_csv(out_file, filtered_contigs, write_inferred=False)
 
+    # Set a default value for paired clonotype diversity so that it will be
+    # present in the metric summary csv even when there are no paired cells
+    # or in denovo mode
+    paired_diversity_metric = reporter._get_metric_attr('vdj_paired_clonotype_diversity', MULTI_REFS_PREFIX, 'raw')
+    if not paired_diversity_metric.d:
+        paired_diversity_metric.add(None, 0)
+
     reporter.report_summary_json(outs.summary)
 
 
@@ -145,6 +153,6 @@ def join(args, outs, chunk_defs, chunk_outs):
         src = getattr(chunk_outs[0], out_name)
         dest = getattr(outs, out_name)
         if os.path.isfile(src):
-            cr_utils.copy(src, dest)
+            cr_io.copy(src, dest)
         else:
             setattr(outs, out_name, None)

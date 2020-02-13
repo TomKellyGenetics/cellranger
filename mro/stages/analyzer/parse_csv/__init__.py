@@ -3,7 +3,7 @@
 # Copyright (c) 2017 10x Genomics, Inc. All rights reserved.
 #
 
-import cellranger.utils as cr_utils
+import cellranger.io as cr_io
 import csv
 import os
 import martian
@@ -17,6 +17,10 @@ stage PARSE_PARAM_CSV(
     out int   num_pca_bcs,
     out int   num_pca_genes,
     out int   num_principal_comps,
+    out  int   cbc_knn,
+    out  float cbc_alpha,
+    out  float cbc_sigma,
+    out  bool  cbc_realign_panorama,
     out int   max_clusters,
     out int   graphclust_neighbors,
     out float neighbor_a,
@@ -38,6 +42,10 @@ ANALYSIS_PARAMS = {
     'num_pca_bcs': int,
     'num_pca_genes': int,
     'num_principal_comps': int,
+    'cbc_knn': int,
+    'cbc_alpha': float,
+    'cbc_sigma': float,
+    'cbc_realign_panorama': bool,
     'max_clusters': int,
     'graphclust_neighbors': int,
     'neighbor_a': float,
@@ -60,7 +68,7 @@ def main(args, outs):
             setattr(outs, param, None)
 
     if args.params_csv is not None:
-        cr_utils.copy(args.params_csv, outs.params_csv)
+        cr_io.copy(args.params_csv, outs.params_csv)
 
 def parse_parameters(filename):
     if filename is None:
@@ -88,6 +96,16 @@ def parse_parameters(filename):
                 martian.exit("Cannot specify the same parameter twice: %s" % name)
             required_type = ANALYSIS_PARAMS[name]
             try:
+                if required_type == bool:
+                    org_value = value
+                    value = value.lower()
+                    if value == "true":
+                        value = 1
+                    elif value == "false":
+                        value = 0
+                    else:
+                        msg = ("Parameter {} must be set to 'true' or 'false', not {}.").format(name, org_value)
+                        martian.exit(msg)
                 cast_value = required_type(value)
                 params[name] = cast_value
             except ValueError:

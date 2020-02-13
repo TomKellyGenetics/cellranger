@@ -2,11 +2,11 @@
 #
 # Copyright (c) 2017 10X Genomics, Inc. All rights reserved.
 #
-
+import math
 import cellranger.analysis.multigenome as cr_mg_analysis
-import cellranger.constants as cr_constants
-import cellranger.matrix as cr_matrix
-import cellranger.utils as cr_utils
+import cellranger.h5_constants as h5_constants
+from cellranger.matrix import CountMatrix
+import cellranger.io as cr_io
 
 __MRO__ = """
 stage RUN_MULTIGENOME_ANALYSIS(
@@ -24,20 +24,20 @@ stage RUN_MULTIGENOME_ANALYSIS(
 
 def split(args):
     if args.skip or not args.is_multi_genome:
-        return {'chunks': [{'__mem_gb': cr_constants.MIN_MEM_GB}]}
+        return {'chunks': []}
+
+    mem_gb = CountMatrix.get_mem_gb_from_matrix_h5(args.raw_matrices_h5)
+    mem_gb += CountMatrix.get_mem_gb_from_matrix_h5(args.filtered_matrices_h5)
 
     chunks = [{
-        '__mem_gb': round(1.5 * cr_constants.MIN_MEM_GB)
+        '__mem_gb': int(math.ceil(max(h5_constants.MIN_MEM_GB, mem_gb)))
     }]
     return {'chunks': chunks}
 
 def main(args, outs):
-    if args.skip or not args.is_multi_genome:
-        return
-
-    raw_matrices = cr_matrix.GeneBCMatrices.load_h5(args.raw_matrices_h5)
-    filtered_matrices = cr_matrix.GeneBCMatrices.load_h5(args.filtered_matrices_h5)
-    analysis = cr_mg_analysis.MultiGenomeAnalysis(raw_matrices, filtered_matrices)
+    raw_matrix = CountMatrix.load_h5_file(args.raw_matrices_h5)
+    filtered_matrix = CountMatrix.load_h5_file(args.filtered_matrices_h5)
+    analysis = cr_mg_analysis.MultiGenomeAnalysis(raw_matrix, filtered_matrix)
     analysis.run_all()
     analysis.save_summary_json(outs.multi_genome_summary)
     analysis.save_gem_class_json(outs.multi_genome_json)
@@ -48,6 +48,6 @@ def join(args, outs, chunk_defs, chunk_outs):
         return
 
     chunk_out = chunk_outs[0]
-    cr_utils.copy(chunk_out.multi_genome_summary, outs.multi_genome_summary)
-    cr_utils.copytree(chunk_out.multi_genome_csv, outs.multi_genome_csv)
-    cr_utils.copytree(chunk_out.multi_genome_json, outs.multi_genome_json)
+    cr_io.copy(chunk_out.multi_genome_summary, outs.multi_genome_summary)
+    cr_io.copytree(chunk_out.multi_genome_csv, outs.multi_genome_csv)
+    cr_io.copytree(chunk_out.multi_genome_json, outs.multi_genome_json)

@@ -4,6 +4,7 @@
 #
 import collections
 import cPickle
+import errno
 import h5py
 import itertools
 import numpy as np
@@ -12,9 +13,11 @@ import scipy.sparse as sp_sparse
 import sklearn.neighbors as sk_neighbors
 import subprocess
 import tables
-import cellranger.analysis.io as cr_io
+import time
+import tenkit.log_subprocess as tk_subproc
+import cellranger.analysis.io as analysis_io
 import cellranger.analysis.clustering as cr_clustering
-import cellranger.constants as cr_constants
+import cellranger.analysis.constants as analysis_constants
 from cellranger.logperf import LogPerf
 
 GRAPHCLUST = collections.namedtuple('GRAPHCLUST', ['clusters'])
@@ -70,7 +73,7 @@ def pipe_weighted_edgelist_to_convert(matrix, bin_filename, weight_filename):
 
     devnull = open(os.devnull, 'w')
 
-    proc = subprocess.Popen([LOUVAIN_CONVERT_BINPATH,
+    proc = tk_subproc.Popen([LOUVAIN_CONVERT_BINPATH,
                            '-i', '/dev/stdin',
                            '-o', bin_filename,
                            '-w', weight_filename,
@@ -87,7 +90,7 @@ def pipe_weighted_edgelist_to_convert(matrix, bin_filename, weight_filename):
 def run_louvain_weighted_clustering(bin_filename, weight_filename, louvain_out):
     """ Run Louvain clustering on a weighted edge-list """
     with open(louvain_out, 'w') as f:
-        subprocess.check_call([LOUVAIN_BINPATH,
+        tk_subproc.check_call([LOUVAIN_BINPATH,
                                bin_filename,
                                '-w', weight_filename,
                                '-q', '0',
@@ -96,25 +99,46 @@ def run_louvain_weighted_clustering(bin_filename, weight_filename, louvain_out):
 
 def pipe_unweighted_edgelist_to_convert(matrix, bin_filename):
     """ Pipe an unweighted edgelist (COO sparse matrix) to Louvain's convert utility """
-    devnull = open(os.devnull, 'w')
 
-    proc = subprocess.Popen([LOUVAIN_CONVERT_BINPATH,
-                           '-i', '/dev/stdin',
+    proc = tk_subproc.Popen([LOUVAIN_CONVERT_BINPATH,
+                           '-i', '-',
                            '-o', bin_filename,
-                         ], stdin=subprocess.PIPE, stdout=devnull, stderr=devnull)
+                         ], stdin=subprocess.PIPE)
+
+
+    # Check if the process terminated early
+    time.sleep(3)
+    retcode = proc.poll()
+    if retcode is not None:
+        proc.stdin.close()
+        proc.wait()
+        raise Exception("'convert' command terminated early with exit code %d" % proc.returncode)
 
     # Stream text triplets to 'convert'
-    for ij in itertools.izip(matrix.row, matrix.col):
-        proc.stdin.write('%d\t%d\n' % ij)
+    print 'Writing %d elements.' % len(matrix.row)
 
-    proc.stdin.close()
+    try:
+        for ij in itertools.izip(matrix.row, matrix.col):
+            proc.stdin.write('%d\t%d\n' % ij)
+        proc.stdin.close()
+    except IOError as e:
+        if e.errno == errno.EPIPE:
+            proc.stdin.close()
+            proc.wait()
+            raise Exception("'convert' binary closed the pipe before we finished writing to it. It terminated with exit code %d" % proc.returncode)
+
     proc.wait()
-    devnull.close()
+
+    if proc.returncode != 0:
+        raise Exception("'convert' command failed with exit code %d" % proc.returncode)
+
+    if not os.path.exists(bin_filename):
+        raise Exception("'convert' failed to write the matrix file. Please see the standard error file (_stderr) to see if it emitted any errors.")
 
 def run_louvain_unweighted_clustering(bin_filename, louvain_out):
     """ Run Louvain clustering on an unweighted edge-list """
     with open(louvain_out, 'w') as f:
-        subprocess.check_call([LOUVAIN_BINPATH,
+        tk_subproc.check_call([LOUVAIN_BINPATH,
                                bin_filename,
                                '-q', '0',
                                '-l', '-1',
@@ -181,8 +205,8 @@ def save_graphclust_h5(f, labels):
                                                  global_sort_key=float('-inf'), # always first
                                                  description=cr_clustering.humanify_clustering_key(clustering_key))
 
-    group = f.create_group(f.root, cr_constants.ANALYSIS_H5_CLUSTERING_GROUP)
-    cr_io.save_h5(f, group, clustering_key, clustering)
+    group = f.create_group(f.root, analysis_constants.ANALYSIS_H5_CLUSTERING_GROUP)
+    analysis_io.save_h5(f, group, clustering_key, clustering)
 
 def save_ndarray_h5(data, path, dataset_name):
     """ Save a numpy array to an hdf5 file """
@@ -196,10 +220,10 @@ def load_ndarray_h5(path, dataset_name):
 
 def load_graphclust_from_h5(filename):
     with tables.open_file(filename, 'r') as f:
-        group = f.root._v_groups[cr_constants.ANALYSIS_H5_CLUSTERING_GROUP]
+        group = f.root._v_groups[analysis_constants.ANALYSIS_H5_CLUSTERING_GROUP]
 
         # Take the first entry
-        for key, clustering in cr_io.load_h5_iter(group, cr_clustering.CLUSTERING):
+        for key, clustering in analysis_io.load_h5_iter(group, cr_clustering.CLUSTERING):
             clustering_type, _ = cr_clustering.parse_clustering_key(key)
             if clustering_type == cr_clustering.CLUSTER_TYPE_GRAPHCLUST:
                 return clustering

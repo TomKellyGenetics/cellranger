@@ -1,0 +1,14 @@
+[workspace]
+
+members = [
+    "annotate_reads",
+    "chunk_reads",
+    "cr_stage",
+    "detect_chemistry",
+    "vdj_asm",
+    "rust-utils-10x/tenkit",
+    "rust-utils-10x/mark_duplicates",
+]
+
+[profile.release]
+debug = true

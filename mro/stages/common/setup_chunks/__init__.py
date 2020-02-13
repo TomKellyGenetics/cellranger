@@ -2,25 +2,35 @@
 #
 # Copyright (c) 2015 10X Genomics, Inc. All rights reserved.
 #
+# 1) Locate and identify all the input FASTQs.
+# 2) For `cellranger count`, autodetect the chemistry version (for 3')
+#      or sequencing configuration (for 5').
+
 import gzip
 import martian
 import os
-import tenkit.constants as tk_constants
 import tenkit.bam as tk_bam
 import tenkit.fasta as tk_fasta
 import tenkit.preflight as tk_preflight
 import cellranger.chemistry as cr_chem
 import cellranger.constants as cr_constants
+import cellranger.library_constants as lib_constants
+import cellranger.h5_constants as h5_constants
+import cellranger.fastq as cr_fastq
+import cellranger.sample_def as cr_sample_def
 
 __MRO__ = '''
 stage SETUP_CHUNKS(
     in  string sample_id,
     in  map[]  sample_def,
+    in  string[] library_type_filter,
     in  string chemistry_name,
     in  map    custom_chemistry_def,
+    in  string default_library_type,
     out map[]  chunks,
     out map    chemistry_def,
     out string barcode_whitelist,
+    out map[]  library_info,
     src py     "stages/common/setup_chunks",
 )
 '''
@@ -41,15 +51,22 @@ def validate_fastq_lists(filename_lists):
         martian.exit('FASTQ files differ in number. Exiting pipeline.')
     return True
 
-def construct_chunks(filename_lists, sample_id, sample_def, reads_interleaved, chemistry):
+def construct_chunks(filename_lists,
+                     sample_id, gem_group, library_id,
+                     reads_interleaved, chemistry, library_type,
+                     subsample_rate):
+    """ filename_lists (list of dict<str,list>) """
     chunks = []
 
     for chunk_idx in xrange(len(filename_lists.values()[0])):
         chunk = {
-            'gem_group': sample_def['gem_group'],
+            'gem_group': gem_group,
+            'library_type': library_type,
+            'library_id': library_id,
             'reads_interleaved': reads_interleaved,
             'read_chunks': {},
             'chemistry': chemistry,
+            'subsample_rate': subsample_rate,
         }
 
         for read_type in cr_constants.FASTQ_READ_TYPES.keys():
@@ -60,9 +77,10 @@ def construct_chunks(filename_lists, sample_id, sample_def, reads_interleaved, c
         # Infer flowcell, lane from first fastq
         first_fastq = [fq for fq in chunk['read_chunks'].values() if fq is not None][0]
         flowcell, lane = tk_fasta.get_run_data(first_fastq)
-        library_id = sample_def.get('library_id', 'MissingLibrary')
-        gem_group = str(sample_def['gem_group'] or 1)
-        rg_string = tk_bam.pack_rg_string(sample_id, library_id, gem_group, flowcell, lane)
+
+        rg_string = tk_bam.pack_rg_string(sample_id, library_id,
+                                          str(gem_group),
+                                          flowcell, lane)
         chunk['read_group'] = rg_string
 
         chunks.append(chunk)
@@ -76,78 +94,33 @@ def fill_in_missing_reads(filename_lists):
         if len(filename_list) == 0:
             filename_lists[read_type] = [None] * max_filenames
 
-def main_bcl_processor(sample_id, sample_def, chemistry_arg, custom_chemistry_def):
+def setup_chunks(sample_id, fq_spec, gem_group, library_id,
+                 chemistry, library_type, subsample_rate):
+    """ Build chunks for a single sample def """
     chunks = []
 
-    sample_index_strings, msg = tk_preflight.check_sample_indices(sample_def)
-    if sample_index_strings is None:
-        martian.exit(msg)
+    for _, group_spec in fq_spec.get_group_spec_iter():
 
-    path = sample_def['read_path']
-    lanes = sample_def['lanes']
-
-    for sample_index in sample_index_strings:
-        # Determine the read-type => fastq filename mapping
-        try:
-            chemistry_name = cr_chem.infer_sc3p_chemistry_bcl_processor(chemistry_arg, path,
-                                                                        sample_index, lanes)
-        except cr_chem.NoInputFastqsException:
-            continue
-
-        if chemistry_name == cr_chem.CUSTOM_CHEMISTRY_NAME:
-            chemistry = custom_chemistry_def
-        else:
-            chemistry = cr_chem.get_chemistry(chemistry_name)
-
-        read_type_map = cr_chem.get_read_type_map(chemistry, tk_constants.BCL_PROCESSOR_FASTQ_MODE)
+        # Map internal read types to external (filename-based) readtypes
+        read_type_map = cr_chem.get_read_type_map(chemistry, group_spec.fastq_mode)
 
         # Collect the fastq files for each read type
         filename_lists = {}
         for dest_read_type in cr_constants.FASTQ_READ_TYPES:
             src_read_type = read_type_map[dest_read_type]
-            filename_lists[dest_read_type] = tk_fasta.find_input_fastq_files_10x_preprocess(
-                path, src_read_type, sample_index, lanes)
+            filename_lists[dest_read_type] = group_spec.get_fastqs(src_read_type)
 
         fill_in_missing_reads(filename_lists)
+
         if validate_fastq_lists(filename_lists):
-            chunks += construct_chunks(filename_lists, sample_id, sample_def, reads_interleaved=True,
-                                       chemistry=chemistry)
-
-    return chunks
-
-def main_ilmn_bcl2fastq(sample_id, sample_def, chemistry_arg, custom_chemistry_def):
-    chunks = []
-
-    sample_names = sample_def['sample_names']
-    path = sample_def['read_path']
-    lanes = sample_def['lanes']
-
-    for sample_name in sample_names:
-        # Determine the read-type => fastq filename mapping
-        try:
-            chemistry_name = cr_chem.infer_sc3p_chemistry_ilmn_bcl2fastq(chemistry_arg, path,
-                                                                         sample_name, lanes)
-        except cr_chem.NoInputFastqsException:
-            continue
-
-        if chemistry_name == cr_chem.CUSTOM_CHEMISTRY_NAME:
-            chemistry = custom_chemistry_def
-        else:
-            chemistry = cr_chem.get_chemistry(chemistry_name)
-
-        read_type_map = cr_chem.get_read_type_map(chemistry, tk_constants.ILMN_BCL2FASTQ_FASTQ_MODE)
-
-        # Collect the fastq files for each read type
-        filename_lists = {}
-        for dest_read_type in cr_constants.FASTQ_READ_TYPES:
-            src_read_type = read_type_map[dest_read_type]
-            filename_lists[dest_read_type] = tk_fasta.find_input_fastq_files_bcl2fastq_demult(
-                path, src_read_type, sample_name, lanes)
-
-        fill_in_missing_reads(filename_lists)
-        if validate_fastq_lists(filename_lists):
-            chunks += construct_chunks(filename_lists, sample_id, sample_def, reads_interleaved=False,
-                                       chemistry=chemistry)
+            chunks += construct_chunks(filename_lists,
+                                       sample_id=sample_id,
+                                       gem_group=gem_group,
+                                       library_id=library_id,
+                                       reads_interleaved=group_spec.interleaved,
+                                       chemistry=chemistry,
+                                       library_type=library_type,
+                                       subsample_rate=subsample_rate)
 
     return chunks
 
@@ -156,34 +129,66 @@ def main(args, outs):
     if not ok:
         martian.exit(msg)
 
-    outs.chunks = []
-    for sample_def in args.sample_def:
-        fastq_mode = sample_def['fastq_mode']
-        chunks = []
+    if args.chemistry_name is None:
+        martian.exit("The chemistry was unable to be automatically determined. This can happen if not enough reads originate from the given reference. Please verify your choice of reference or explicitly specify the chemistry via the --chemistry argument.")
 
-        if fastq_mode == tk_constants.BCL_PROCESSOR_FASTQ_MODE:
-            chunks = main_bcl_processor(args.sample_id, sample_def, args.chemistry_name, args.custom_chemistry_def)
-        elif fastq_mode == tk_constants.ILMN_BCL2FASTQ_FASTQ_MODE:
-            chunks = main_ilmn_bcl2fastq(args.sample_id, sample_def, args.chemistry_name, args.custom_chemistry_def)
-        else:
-            martian.throw("Unrecognized fastq_mode: %s" % fastq_mode)
+    if args.chemistry_name == cr_chem.CUSTOM_CHEMISTRY_NAME:
+        chemistry = args.custom_chemistry_def
+    else:
+        chemistry = cr_chem.get_chemistry(args.chemistry_name)
+
+    ## Build chunk dicts
+    outs.chunks = []
+
+    ## Assign library ids
+    sample_defs = args.sample_def
+    default_lib_type = args.default_library_type or lib_constants.DEFAULT_LIBRARY_TYPE
+    library_ids = cr_sample_def.assign_library_ids(sample_defs, default_lib_type)
+
+    for sample_def, library_id in zip(sample_defs, library_ids):
+        fq_spec = cr_fastq.FastqSpec.from_sample_def(sample_def)
+        gem_group = cr_sample_def.get_gem_group(sample_def)
+        library_type = cr_sample_def.get_library_type(sample_def) or default_lib_type
+        subsample_rate = cr_sample_def.get_subsample_rate(sample_def)
+
+        chunks = setup_chunks(args.sample_id,
+                              fq_spec,
+                              gem_group,
+                              library_id,
+                              chemistry,
+                              library_type,
+                              subsample_rate)
 
         if len(chunks) == 0:
+            # No FASTQs found for a sample def
             martian.exit(cr_constants.NO_INPUT_FASTQS_MESSAGE)
 
         outs.chunks += chunks
 
     if len(outs.chunks) == 0:
+        # No FASTQs found at all
         martian.exit(cr_constants.NO_INPUT_FASTQS_MESSAGE)
 
+    ## Check the FASTQ files themselves
     check_chunk_fastqs(outs.chunks)
 
+    ## Check the chemistry specifications
     check_chunk_chemistries(outs.chunks)
 
-    # Output chemistry and barcode whitelist
+    ## Output chemistry and barcode whitelist
     outs.chemistry_def = outs.chunks[0]['chemistry']
     outs.barcode_whitelist = cr_chem.get_barcode_whitelist(outs.chemistry_def)
 
+    ## Output library info
+    lib_tuples = sorted(set((c['gem_group'], c['library_id'], c['library_type']) for c in outs.chunks))
+    lib_info = []
+    for g, i, t in lib_tuples:
+        lib_info.append({
+            'gem_group': g,
+            'library_id': i,
+            'library_type': t,
+        })
+    outs.library_info = lib_info
 
 def check_fastq(fastq):
     # Check if fastq is readable
@@ -198,10 +203,10 @@ def check_fastq(fastq):
     except:
         is_gzip_fastq = False
 
-    if is_gzip_fastq and not fastq.endswith(cr_constants.GZIP_SUFFIX):
-        martian.exit("Input FASTQ file is gzipped but filename does not have %s suffix: %s" % (fastq, cr_constants.GZIP_SUFFIX))
-    if not is_gzip_fastq and fastq.endswith(cr_constants.GZIP_SUFFIX):
-        martian.exit("Input FASTQ file is not gzipped but filename has %s suffix: %s" % (fastq, cr_constants.GZIP_SUFFIX))
+    if is_gzip_fastq and not fastq.endswith(h5_constants.GZIP_SUFFIX):
+        martian.exit("Input FASTQ file is gzipped but filename does not have %s suffix: %s" % (fastq, h5_constants.GZIP_SUFFIX))
+    if not is_gzip_fastq and fastq.endswith(h5_constants.GZIP_SUFFIX):
+        martian.exit("Input FASTQ file is not gzipped but filename has %s suffix: %s" % (fastq, h5_constants.GZIP_SUFFIX))
 
 def check_chunk_fastqs(chunks):
     for chunk in chunks:
@@ -213,6 +218,8 @@ def check_chunk_fastqs(chunks):
 def check_chunk_chemistries(chunks):
     """ Ensure all samples were generated with the same chemistry. """
     unique_chemistries = set([chunk['chemistry']['name'] for chunk in chunks])
+
     descriptions = map(cr_chem.get_chemistry_description_from_name, list(unique_chemistries))
+
     if len(unique_chemistries) > 1:
         martian.exit("Found multiple chemistries: %s. Combined analysis of libraries generated with different chemistries is not supported." % ', '.join(descriptions))

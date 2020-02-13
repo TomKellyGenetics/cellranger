@@ -2,23 +2,27 @@
 #
 # Copyright (c) 2017 10X Genomics, Inc. All rights reserved.
 #
+
+import h5py as h5
 import json
 import martian
-import tables
-import cellranger.analysis.io as cr_io
-import cellranger.constants as cr_constants
+import cellranger.analysis.io as analysis_io
+import cellranger.h5_constants as h5_constants
 import cellranger.matrix as cr_matrix
-import cellranger.utils as cr_utils
+import cellranger.io as cr_io
 import cellranger.webshim.common as cr_webshim
 import cellranger.webshim.data as cr_webshim_data
+from cellranger.webshim.constants.gex import ReanalyzeSampleProperties
 from cellranger.webshim.constants.shared import PIPELINE_REANALYZE
+import tenkit.safe_json as tk_json
 
 __MRO__ = """
 stage SUMMARIZE_REANALYSIS(
-    in  string analysis_id,
-    in  string analysis_desc,
+    in  string sample_id,
+    in  string sample_desc,
     in  h5     filtered_matrices,
     in  path   analysis,
+    in  json   analyze_matrices_summary,
     out html   web_summary,
     out json   summary,
     src py     "stages/analyzer/summarize_reanalysis",
@@ -26,28 +30,41 @@ stage SUMMARIZE_REANALYSIS(
 )
 """
 def split(args):
-    # Estimate memory usage from the matrix stored in the analysis h5
     if args.analysis:
-        with tables.open_file(cr_io.h5_path(args.analysis), 'r') as f:
-            matrix = getattr(f.root, cr_constants.ANALYSIS_H5_MATRIX_GROUP)
-            matrix_mem_gb = cr_matrix.GeneBCMatrix.get_mem_gb_from_group(matrix)
+        # Estimate memory usage from the matrix stored in the analysis h5
+        h5_path = analysis_io.h5_path(args.analysis)
+        with h5.File(h5_path, 'r') as f:
+            matrix_mem_gb = cr_matrix.CountMatrix.get_mem_gb_from_group(f['matrix'])
     else:
-        matrix_mem_gb = cr_constants.MIN_MEM_GB
+        matrix_mem_gb = h5_constants.MIN_MEM_GB
 
     chunks = [{
         '__mem_gb': matrix_mem_gb,
     }]
-    return {'chunks': chunks}
+    return {
+        'chunks': chunks,
+        'join': {'__mem_gb': h5_constants.MIN_MEM_GB}
+    }
 
 def main(args, outs):
-    genomes = cr_matrix.GeneBCMatrices.load_genomes_from_h5(args.filtered_matrices)
-    chemistry = cr_matrix.GeneBCMatrices.load_chemistry_from_h5(args.filtered_matrices)
-    total_cells = cr_matrix.GeneBCMatrices.count_cells_from_h5(args.filtered_matrices)
-    summary = {'chemistry_description': chemistry, 'filtered_bcs_transcriptome_union': total_cells}
-    with open(outs.summary, 'w') as f:
-        json.dump(summary, f, indent=4, sort_keys=True)
+    genomes = cr_matrix.CountMatrix.get_genomes_from_h5(args.filtered_matrices)
+    chemistry = cr_matrix.CountMatrix.load_chemistry_from_h5(args.filtered_matrices)
+    total_cells = cr_matrix.CountMatrix.count_cells_from_h5(args.filtered_matrices)
 
-    sample_properties = cr_webshim.get_sample_properties(args.analysis_id, args.analysis_desc, genomes, version=martian.get_pipelines_version())
+    summary = {'chemistry_description': chemistry, 'filtered_bcs_transcriptome_union': total_cells}
+    if args.analyze_matrices_summary:
+        with open(args.analyze_matrices_summary) as reader:
+            analysis_summary = json.load(reader)
+        summary.update(analysis_summary)
+
+    with open(outs.summary, 'w') as f:
+        json.dump(tk_json.json_sanitize(summary), f, indent=4, sort_keys=True)
+
+    sample_properties = ReanalyzeSampleProperties(sample_id=args.sample_id,
+                                                  sample_desc=args.sample_desc,
+                                                  genomes=genomes,
+                                                  version=martian.get_pipelines_version())
+    sample_properties = dict(sample_properties._asdict())
 
     sample_data_paths = cr_webshim_data.SampleDataPaths(
         summary_path=outs.summary,
@@ -60,5 +77,5 @@ def main(args, outs):
 def join(args, outs, chunk_defs, chunk_outs):
     chunk_out = chunk_outs[0]
 
-    cr_utils.copy(chunk_out.web_summary, outs.web_summary)
-    cr_utils.copy(chunk_out.summary, outs.summary)
+    cr_io.copy(chunk_out.web_summary, outs.web_summary)
+    cr_io.copy(chunk_out.summary, outs.summary)

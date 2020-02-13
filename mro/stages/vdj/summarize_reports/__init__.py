@@ -4,10 +4,12 @@
 #
 import martian
 import cellranger.report as cr_report
-import cellranger.utils as cr_utils
+import cellranger.io as cr_io
+import cellranger.vdj.constants as vdj_constants
 import cellranger.webshim.common as cr_webshim
 import cellranger.webshim.data as cr_webshim_data
 from cellranger.webshim.constants.shared import PIPELINE_VDJ
+from cellranger.webshim.constants.vdj import VdjSampleProperties
 
 __MRO__ = """
 stage SUMMARIZE_REPORTS(
@@ -32,6 +34,8 @@ stage SUMMARIZE_REPORTS(
     in  h5     umi_info,
     in  csv    clonotype_summary,
     in  csv    barcode_support,
+    in  string chain_type_spec,
+    in  string chain_type_auto,
     out json   metrics_summary_json,
     out csv    metrics_summary_csv,
     out html   web_summary,
@@ -42,16 +46,14 @@ stage SUMMARIZE_REPORTS(
     out csv    barcode_umi_summary,
     out h5     umi_info,
     src py     "stages/vdj/summarize_reports",
-) split using (
 )
 """
 
 def split(args):
-    mem_gb = cr_utils.get_mem_gb_request_from_barcode_whitelist(args.barcode_whitelist, args.gem_groups)
     return {
         'chunks': [{}],
         'join': {
-            '__mem_gb': mem_gb,
+            '__mem_gb': 2,
         },
     }
 
@@ -78,23 +80,23 @@ def join(args, outs, chunk_defs, chunk_outs):
 
     # Copy barcode summary h5
     if args.barcode_summary:
-        cr_utils.copy(args.barcode_summary, outs.barcode_summary)
+        cr_io.copy(args.barcode_summary, outs.barcode_summary)
 
     # Copy cell barcodes
     if args.cell_barcodes:
-        cr_utils.copy(args.cell_barcodes, outs.cell_barcodes)
+        cr_io.copy(args.cell_barcodes, outs.cell_barcodes)
 
     # Copy barcode support
     if args.barcode_support:
-        cr_utils.copy(args.barcode_support, outs.barcode_support)
+        cr_io.copy(args.barcode_support, outs.barcode_support)
 
     # Copy barcode umi summary
     if args.barcode_umi_summary:
-        cr_utils.copy(args.barcode_umi_summary, outs.barcode_umi_summary)
+        cr_io.copy(args.barcode_umi_summary, outs.barcode_umi_summary)
 
     # Copy umi info
     if args.umi_info:
-        cr_utils.copy(args.umi_info, outs.umi_info)
+        cr_io.copy(args.umi_info, outs.umi_info)
 
     sample_data_paths = cr_webshim_data.SampleDataPaths(
         summary_path=outs.metrics_summary_json,
@@ -103,7 +105,19 @@ def join(args, outs, chunk_defs, chunk_outs):
         vdj_barcode_support_path=args.barcode_support,
     )
 
-    sample_properties = cr_webshim.get_sample_properties(args.sample_id, args.sample_desc, [], version=martian.get_pipelines_version())
+    # Determine chain type for the report
+    if args.chain_type_spec == vdj_constants.AUTO_CHAIN_TYPE:
+        chain_type = args.chain_type_auto
+    elif args.chain_type_spec == vdj_constants.ALL_CHAIN_TYPES:
+        chain_type = None
+    else:
+        chain_type = args.chain_type_spec
+
+    sample_properties = VdjSampleProperties(sample_id=args.sample_id,
+                                            sample_desc=args.sample_desc,
+                                            chain_type=chain_type,
+                                            version=martian.get_pipelines_version())
+    sample_properties = dict(sample_properties._asdict())
 
     sample_data = cr_webshim.load_sample_data(sample_properties, sample_data_paths)
 
