@@ -260,7 +260,7 @@ fn chunk_fastq(p: &Path, nrecord: usize, out_path: &Path, out_prefix: &str,
     use CompressionMethod::{Lz4, Gzip};
 
     println!("opening: {:?}", p);
-    let rr = parse_path(Some(p), |parser| {
+    let rr = parse_path(Some(p), |mut parser| {
         let mut paths: Vec<PathBuf> = vec![];
         let mut total = 0;
         let mut this_chunk = 0;
@@ -280,10 +280,10 @@ fn chunk_fastq(p: &Path, nrecord: usize, out_path: &Path, out_prefix: &str,
             &Some(CompressionSpec{method: Lz4, level}) =>
                 Box::new(StreamWrapper{ s: Some(lz4::EncoderBuilder::new()
                                                 .level(level).build(output)
-                                                .expect("Failed to init lz4 encoder")) }) as Box<Write>,
+                                                .expect("Failed to init lz4 encoder")) }) as Box<dyn Write>,
             &Some(CompressionSpec{method: Gzip, ..}) =>
-                Box::new(GzEncoder::new(output, Compression::fast())) as Box<Write>,
-            &None => Box::new(std::io::BufWriter::new(output)) as Box<Write>,
+                Box::new(GzEncoder::new(output, Compression::fast())) as Box<dyn Write>,
+            &None => Box::new(std::io::BufWriter::new(output)) as Box<dyn Write>,
         };
 
         let ret = parser.each(|rec| {
@@ -301,10 +301,10 @@ fn chunk_fastq(p: &Path, nrecord: usize, out_path: &Path, out_prefix: &str,
                     &Some(CompressionSpec{method: Lz4, level}) =>
                         Box::new(StreamWrapper{ s: Some(lz4::EncoderBuilder::new()
                                                         .level(level).build(output)
-                                                        .expect("Failed to init lz4 encoder")) }) as Box<Write>,
+                                                        .expect("Failed to init lz4 encoder")) }) as Box<dyn Write>,
                     &Some(CompressionSpec{method: Gzip, ..}) =>
-                        Box::new(GzEncoder::new(output, Compression::fast())) as Box<Write>,
-                    &None => Box::new(std::io::BufWriter::new(output)) as Box<Write>,
+                        Box::new(GzEncoder::new(output, Compression::fast())) as Box<dyn Write>,
+                    &None => Box::new(std::io::BufWriter::new(output)) as Box<dyn Write>,
                 };
 
                 this_chunk = 0;
