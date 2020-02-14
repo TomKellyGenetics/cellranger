@@ -246,11 +246,11 @@ impl<W: Write> Write for StreamWrapper<W> {
         self.s.as_mut().unwrap().flush()
     }
 }
-impl<W: Write> Drop for StreamWrapper<W, !> {
+impl<W: Write> Drop for StreamWrapper<W> {
     fn drop(&mut self) {
         match self.s.take() {
             Some(s) => {s.finish();}
-            Err(never) => {never();}
+            Err(s) => {}
             None => {}
         }
     }
