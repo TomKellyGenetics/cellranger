@@ -202,10 +202,10 @@ fn map_reads(args: Args) {
     // Use Box here to make the match arms consistent
     let idx = match idx_type {
         KmerIndexType::BBHashIndex => {
-            Box::new(load_index::<BBHashKmerIndex<dyn MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<KmerPresenceQuery<dyn MyKmer>>
+            Box::new(load_index::<dyn BBHashKmerIndex<dyn MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<dyn KmerPresenceQuery<dyn MyKmer>>
         },
         KmerIndexType::HashSetIndex => {
-            Box::new(load_index::<HashSetKmerIndex<dyn MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<KmerPresenceQuery<dyn MyKmer>>
+            Box::new(load_index::<HashSetKmerIndex<dyn MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<dyn KmerPresenceQuery<dyn MyKmer>>
         },
     };
 
