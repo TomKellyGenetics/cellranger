@@ -249,7 +249,8 @@ impl<W: Write> Write for StreamWrapper<W> {
 impl<W: Write> Drop for StreamWrapper<W> {
     fn drop(&mut self) {
         match self.s.take() {
-            Some(s) => {s.finish().expect("could not write file");}
+            Some(s) => {s.finish();}
+            Err(never) => never
             None => {}
         }
     }
