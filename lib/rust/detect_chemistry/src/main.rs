@@ -105,8 +105,8 @@ fn main() {
         get_transcripts(args);
     } else if args.cmd_index_transcripts {
         match args.clone().flag_hash.unwrap().as_str() {
-            "bbhash" => index_transcripts_mphf::<dyn MyKmer>(args),
-            "hashset" => index_transcripts_hashset::<dyn MyKmer>(args),
+            "bbhash" => index_transcripts_mphf::<MyKmer>(args),
+            "hashset" => index_transcripts_hashset::<MyKmer>(args),
             _ => panic!("Unexpected value for --hash"),
         }
     } else if args.cmd_map_reads {
@@ -202,10 +202,10 @@ fn map_reads(args: Args) {
     // Use Box here to make the match arms consistent
     let idx = match idx_type {
         KmerIndexType::BBHashIndex => {
-            Box::new(load_index::<dyn BBHashKmerIndex<dyn MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<dyn KmerPresenceQuery<dyn MyKmer>>
+            Box::new(load_index::<dyn BBHashKmerIndex<MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<dyn KmerPresenceQuery<MyKmer>>
         },
         KmerIndexType::HashSetIndex => {
-            Box::new(load_index::<HashSetKmerIndex<dyn MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<dyn KmerPresenceQuery<dyn MyKmer>>
+            Box::new(load_index::<HashSetKmerIndex<MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<dyn KmerPresenceQuery<MyKmer>>
         },
     };
 
