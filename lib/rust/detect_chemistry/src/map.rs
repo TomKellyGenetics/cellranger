@@ -114,7 +114,7 @@ mod tests {
 
         let reader = fasta::Reader::new(Cursor::new(fa_str.as_bytes()));
 
-        let index: index::BBHashKmerIndex<MyKmer> = index::index_transcripts_mphf(reader, 1000, 0, 2.0);
+        let index: index::BBHashKmerIndex<dyn MyKmer> = index::index_transcripts_mphf(reader, 1000, 0, 2.0);
 
         // Generate fastq
         let mut sense_fq_reads = Vec::new();

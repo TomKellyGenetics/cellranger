@@ -175,8 +175,8 @@ mod tests {
 
         let reader = fasta::Reader::new(Cursor::new(fa_str.as_bytes()));
 
-        let index: index::BBHashKmerIndex<MyKmer> = index::index_transcripts_mphf(reader, 1000, 0, 2.0);
-        //let index: index::HashSetKmerIndex<MyKmer> = index::index_transcripts_hashset(reader, 0);
+        let index: index::BBHashKmerIndex<dyn MyKmer> = index::index_transcripts_mphf(reader, 1000, 0, 2.0);
+        //let index: index::HashSetKmerIndex<dyn MyKmer> = index::index_transcripts_hashset(reader, 0);
 
         let dna_piece = DnaString::from_acgt_bytes(&seq[0..32].to_owned());
         let kmer: MyKmer = dna_piece.iter_kmers().nth(0).unwrap();
