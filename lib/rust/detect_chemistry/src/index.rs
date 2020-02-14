@@ -73,7 +73,7 @@ impl<K: Hash + Eq + Debug + Clone> KmerPresenceQuery<K> for BBHashKmerIndex<K> {
 }
 
 
-pub fn index_transcripts_hashset<R: dyn Read, K: Kmer + Hash>(fa_reader: fasta::Reader<R>,
+pub fn index_transcripts_hashset<R: Read, K: Kmer + Hash>(fa_reader: fasta::Reader<R>,
                                                           skip_bases: usize) -> HashSetKmerIndex<K> {
     let mut idx = HashSetKmerIndex::<K>::new(1000000);
 
@@ -91,7 +91,7 @@ pub fn index_transcripts_hashset<R: dyn Read, K: Kmer + Hash>(fa_reader: fasta::
     idx
 }
 
-pub fn index_transcripts_mphf<R: dyn Read, K: Kmer + Hash>(fa_reader: fasta::Reader<R>,
+pub fn index_transcripts_mphf<R: Read, K: Kmer + Hash>(fa_reader: fasta::Reader<R>,
                                                        est_n_kmers: usize,
                                                        skip_bases: usize,
                                                        gamma: f64) -> BBHashKmerIndex<K> {
@@ -139,12 +139,12 @@ pub fn index_transcripts_mphf<R: dyn Read, K: Kmer + Hash>(fa_reader: fasta::Rea
 }
 
 // Get the type of kmer index stored in a file
-pub fn get_index_type<R: dyn Read>(mut reader: &mut R) -> KmerIndexType {
+pub fn get_index_type<R: Read>(mut reader: &mut R) -> KmerIndexType {
      bincode::deserialize_from(&mut reader)
         .expect("Failed to read index type")
 }
 
-pub fn load_index<I: DeserializeOwned, R: dyn Read>(mut reader: &mut R) -> I {
+pub fn load_index<I: DeserializeOwned, R: Read>(mut reader: &mut R) -> I {
     let index: I = bincode::deserialize_from(&mut reader)
         .expect("Failed to deserialize index");
     index

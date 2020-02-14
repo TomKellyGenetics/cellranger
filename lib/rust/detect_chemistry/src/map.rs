@@ -37,7 +37,7 @@ pub fn add_metrics(x: &mut Metrics, y: &Metrics) {
     x.mapped_reads += y.mapped_reads;
 }
 
-pub fn map_reads<K: Kmer, I: index::KmerPresenceQuery<K> + ?Sized, R: dyn Read> (index: &I, fq_reader: fastq::Reader<R>, min_kmers: usize, skip_bases: usize, initial_reads: usize, interleaved: bool, read_type: Option<String>) -> Metrics {
+pub fn map_reads<K: Kmer, I: index::KmerPresenceQuery<K> + ?Sized, R: Read> (index: &I, fq_reader: fastq::Reader<R>, min_kmers: usize, skip_bases: usize, initial_reads: usize, interleaved: bool, read_type: Option<String>) -> Metrics {
     let mut metrics: Metrics = Default::default();
 
     let mut start_at = 0;
