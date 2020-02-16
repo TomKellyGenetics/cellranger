@@ -9,7 +9,7 @@ use std::ffi::OsStr;
 
 use flate2::read::{MultiGzDecoder};
 
-pub fn open_maybe_gzip<P: AsRef<Path>> (path: &P) -> Box<Read> {
+pub fn open_maybe_gzip<P: AsRef<Path>> (path: &P) -> Box<dyn Read> {
     let file = File::open(path).expect("Failed to open file");
     let ext = path.as_ref().extension();
     if ext.unwrap_or(OsStr::new("")) == "gz" {

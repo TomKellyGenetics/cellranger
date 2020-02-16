@@ -75,8 +75,8 @@ pub struct PairedInputRead {
 }
 
 pub struct CellrangerPairedFastqIter {
-    lines1: Lines<BufReader<Box<Read>>>,
-    lines2: Option<Lines<BufReader<Box<Read>>>>,
+    lines1: Lines<BufReader<Box<dyn Read>>>,
+    lines2: Option<Lines<BufReader<Box<dyn Read>>>>,
     rev_strand: bool,
     read_count: usize,
     umis: HashMap<String, UmiType>,

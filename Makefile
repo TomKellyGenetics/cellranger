@@ -11,7 +11,7 @@ export ROOT_DIR=$(shell pwd)
 ### Rust
 RUST_SRC_PATH=$(shell pwd)/lib/rust
 export CARGO_HOME=$(RUST_SRC_PATH)/.cargo
-RUST_BINS=chunk_reads
+RUST_BINS=vdj_asm chunk_reads annotate_reads detect_chemistry cr_stage
 
 .PHONY: all  clean $(RUST_BINS)   louvain rust-clean  version-files
 
