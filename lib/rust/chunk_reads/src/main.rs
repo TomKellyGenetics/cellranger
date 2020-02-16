@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 
 use std::fs::File;
 use std::io::Write;
+// use std::error::Error;
 use docopt::Docopt;
 use fastq::{parse_path, Record};
 use serde_json::Value;
@@ -235,6 +236,7 @@ fn make_fastq_path(out_path: &Path, out_prefix: &str, chunk_number: usize,
 }
 
 // This wrapper is required because of https://github.com/bozaro/lz4-rs/issues/9
+#[allow(unused_must_use)]
 struct StreamWrapper<W: Write> {
     pub s: Option<lz4::Encoder<W>>,
 }
@@ -249,8 +251,8 @@ impl<W: Write> Write for StreamWrapper<W> {
 impl<W: Write> Drop for StreamWrapper<W> {
     fn drop(&mut self) {
         match self.s.take() {
-            Some(s) => {s.close();}
-            None => {}
+              None => {}
+              Some(s) => {s.finish();}
         }
     }
 }

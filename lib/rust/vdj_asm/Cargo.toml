@@ -17,7 +17,7 @@ bio = "*"
 rand = "0.5"
 debruijn = { git = "https://github.com/10XGenomics/rust-debruijn.git" }
 lazy_static = "*"
-lz4 = "*"
+lz4 = "1.23.1"
 fxhash = "*"
 failure = "*"
 rust-htslib = ">=0.21"

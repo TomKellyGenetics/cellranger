@@ -55,7 +55,7 @@ pub fn parse_gtf<R: BufRead>(reader: R, take_first: bool) -> HashMap<String, Tra
                 continue;
             }
 
-            let mut tx = transcripts.entry(tx_id.to_owned()).or_insert(Transcript {
+            let tx = transcripts.entry(tx_id.to_owned()).or_insert(Transcript {
                 chr: chr.to_owned(),
                 reverse: strand == "-",
                 exons: BinaryHeap::new(),
