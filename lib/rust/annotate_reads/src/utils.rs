@@ -208,12 +208,12 @@ pub fn open_gzip<P: AsRef<Path>>(filename: P) -> GzDecoder<File> {
     GzDecoder::new(f)
 }
 
-pub fn open_maybe_compressed<P: AsRef<Path>>(filename: P) -> Box<dyn Read> {
+pub fn open_maybe_compressed<P: AsRef<Path>>(filename: P) -> Box<Read> {
     match filename.as_ref().extension().and_then(OsStr::to_str) {
-        Some("lz4") => Box::new(open_lz4(filename)) as Box<dyn Read>,
-        Some("gz") => Box::new(open_gzip(filename)) as Box<dyn Read>,
+        Some("lz4") => Box::new(open_lz4(filename)) as Box<Read>,
+        Some("gz") => Box::new(open_gzip(filename)) as Box<Read>,
         _ => Box::new(File::open(filename)
-                      .expect("Failed to open file for reading")) as Box<dyn Read>,
+                      .expect("Failed to open file for reading")) as Box<Read>,
     }
 }
 
