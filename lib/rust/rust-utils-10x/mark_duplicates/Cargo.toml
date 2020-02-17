@@ -13,4 +13,4 @@ serde_json = "*"
 fxhash = "*"
 tenkit = { path = "../tenkit" }
 num = "*"
-rust-htslib = ">=0.21"
+rust-htslib = ">=0.26"

@@ -16,9 +16,20 @@ pub struct Transcript {
     pub exons: BinaryHeap<(i64, i64)>,  // exon intervals
 }
 
+
+// replace this 
+// static START: Once = ONCE_INIT;
+//with this
+//use std::sync::Once;
+//static START: Once = Once::new();
+
+#[allow(deprecated)]
 lazy_static! {
-    static ref TRANSCRIPT_ID_REGEX: Regex = Regex::new(r#"transcript_id\s+"(.*?)""#).expect("Failed to compile regex");
-    static ref GENE_ID_REGEX: Regex = Regex::new(r#"gene_id\s+"(.*?)""#).expect("Failed to compile regex");
+#[allow(deprecated)]
+//    static START: Once::new();
+    #[allow(deprecated)] static ref TRANSCRIPT_ID_REGEX: Regex = #[allow(deprecated)] Regex::new(r#"transcript_id\s+"(.*?)""#).expect("Failed to compile regex");
+#[allow(deprecated)]
+    #[allow(deprecated)] static ref GENE_ID_REGEX: Regex = #[allow(deprecated)] Regex::new(r#"gene_id\s+"(.*?)""#).expect("Failed to compile regex");
 }
 
 fn get_gtf_ids<'a>(text: &'a str) -> (&'a str, &'a str) {
