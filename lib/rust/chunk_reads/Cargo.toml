@@ -6,7 +6,7 @@ authors = ["Patrick Marks <patrick@10xgenomics.com>"]
 [dependencies]
 memchr = ">=0.1"
 lz4 = ">=1.20"
-flate2 = { version = ">=0.2.18", features = ["edition"], default-features = true}
+flate2 = ">=0.2.18"
 #fastq = { git = "https://github.com/pmarks/fastq-rs.git", branch = "master" }
 fastq = { git = "https://github.com/pryvkin10x/fastq-rs.git", branch = "master" }
 #fastq = { git = "https://github.com/aseyboldt/fastq-rs.git", branch = "master" }
