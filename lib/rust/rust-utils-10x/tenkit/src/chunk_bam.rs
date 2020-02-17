@@ -68,7 +68,7 @@ impl<'a> Iterator for BamTellIter<'a> {
         let pos = self.bam.tell();
         match self.bam.read(&mut record) {
             Err(bam::ReadError::NoMoreRecord) => None,
-            Ok(())   => Some(Ok((pos, record))),
+            Ok(T)   => Some(Ok((pos, record))),
             Err(err) => Some(Err(err)),
         }
     }
@@ -87,7 +87,7 @@ fn find_valid_virtual_offset<K: Eq>(bam: &mut bam::Reader,
 
     let mut prev_key = None;
     let tell_iter = BamTellIter { bam: bam };
-    for (cur_voff, read) in tell_iter.map(|x| x.unwrap()) {
+    for (cur_voff, read) in tell_iter.map(|x| x.unwrap().to_string()) {
         n += 1;
         if n == 1000 {
             warn!("Taking a long time to find a chunk boundary. Check your chunk_bound_key function?");

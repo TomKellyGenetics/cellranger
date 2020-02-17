@@ -46,9 +46,9 @@ impl Error for ReadLocParseError {
         }
     }
 
-    fn cause(&self) -> Option<&Error> {
+    fn cause(&self) -> Option<dyn Error> {
         match *self {
-            ReadLocParseError::ParseError(ref err) => Some(err as &Error),
+            ReadLocParseError::ParseError(ref err) => Some(err as dyn Error),
             _ => None,
         }
     }
