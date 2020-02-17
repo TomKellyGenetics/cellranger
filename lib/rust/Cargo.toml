@@ -12,3 +12,5 @@ members = [
 
 [profile.release]
 debug = true
+
+cargo-features = ["edition"]
