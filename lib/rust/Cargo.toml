@@ -10,7 +10,5 @@ members = [
     "rust-utils-10x/mark_duplicates",
 ]
 
-cargo-features = ["edition"]
-
 [profile.release]
 debug = true
