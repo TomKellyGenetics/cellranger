@@ -14,8 +14,8 @@ log = "*"
 fxhash = "*"
 num = "*"
 libc = "*"
-#rust-htslib = { version = "0.26", default-features = false, features = ["serde"] }
-rust-htslib = "0.21.0"
+rust-htslib = { version = "0.26", default-features = false, features = ["serde"] }
+#rust-htslib = "0.21.0"
 
 [dev-dependencies]
 env_logger = "*"
