@@ -10,6 +10,7 @@ use bincode::deserialize_from;
 
 use rust_htslib::bam;
 use rust_htslib::bam::Read;
+use rust_htslib::bam::ReadError;
 
 #[derive(Deserialize, Debug)]
 pub struct GzipHeader {
