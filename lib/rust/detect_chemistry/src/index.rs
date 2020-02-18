@@ -10,7 +10,6 @@ use fnv::FnvHashSet;
 use bio::io::{fasta};
 use debruijn::{Kmer, Vmer};
 use debruijn::dna_string::DnaString;
-use itertools::Itertools;
 use pdqsort;
 use bincode;
 use serde::de::DeserializeOwned;
@@ -72,7 +71,7 @@ impl<K: Hash + Eq + Debug + Clone> KmerPresenceQuery<K> for BBHashKmerIndex<K> {
     }
 }
 
-
+#[allow(deprecated)]
 pub fn index_transcripts_hashset<R: Read, K: Kmer + Hash>(fa_reader: fasta::Reader<R>,
                                                           skip_bases: usize) -> HashSetKmerIndex<K> {
     let mut idx = HashSetKmerIndex::<K>::new(1000000);
@@ -84,7 +83,7 @@ pub fn index_transcripts_hashset<R: Read, K: Kmer + Hash>(fa_reader: fasta::Read
 
             let dna_string = DnaString::from_acgt_bytes(&rec.seq());
 
-            for kmer in dna_string.iter_kmers().step(1+skip_bases) {
+            for kmer in dna_string.iter_kmers().step_by(1+skip_bases) {
                 idx.kmers.insert(kmer);
             }
         }
@@ -104,7 +103,7 @@ pub fn index_transcripts_mphf<R: Read, K: Kmer + Hash>(fa_reader: fasta::Reader<
 
             let dna_string = DnaString::from_acgt_bytes(&rec.seq());
 
-            for kmer in dna_string.iter_kmers().step(1+skip_bases) {
+            for kmer in dna_string.iter_kmers().step_by(1+skip_bases) {
                 kmers.push(kmer);
             }
         }
