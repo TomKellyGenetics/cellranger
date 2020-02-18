@@ -5,7 +5,8 @@ authors = ["Matt Sooknah <matt.sooknah@10xgenomics.com>"]
 
 [dependencies]
 itertools = "0.4"
-docopt = "*"
+docopt = "^1.0.0"
+serde = { version = "1", features = ["derive"] }
 time = "*"
 log = "*"
 num = "*"
