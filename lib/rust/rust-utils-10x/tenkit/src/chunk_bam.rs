@@ -10,7 +10,6 @@ use bincode::deserialize_from;
 
 use rust_htslib::bam;
 use rust_htslib::bam::Read;
-use rust_htslib::bam::ReadError;
 
 #[derive(Deserialize, Debug)]
 pub struct GzipHeader {
@@ -60,6 +59,7 @@ fn parse_bgzf_header(mut bgzf: &mut File, total_bytes: u64) -> Option<u64> {
 /// This is to get around a borrow-violation when using tell() inside a records() loop
 pub struct BamTellIter<'a> {
     pub bam: &'a mut bam::Reader,
+    pub bam: &'a mut bam::ReadError
 }
 impl<'a> Iterator for BamTellIter<'a> {
     type Item = Result<(i64, bam::record::Record), bam::ReadError>;
