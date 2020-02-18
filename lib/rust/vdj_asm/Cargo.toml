@@ -8,7 +8,6 @@ flate2 = "*"
 itertools = "^0.7"
 docopt = "^1.0.0"
 serde = { version = "1", features = ["derive"] }
-serde = "*"
 serde_derive = "*"
 serde_json = "*"
 time = "*"
