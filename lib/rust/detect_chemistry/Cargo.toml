@@ -5,13 +5,13 @@ authors = ["Paul Ryvkin <paul.ryvkin@10xgenomics.com>"]
 
 [dependencies]
 docopt = "^1.0.0"
-serde = { version = "1", features = ["derive"] }
+serde = { version = ">=1.0",  features=["derive"] }
 memchr = "2.3.2"
 #regex = ">=1.3.4" #{ git = "https://github.com/rust-lang/regex.git" }
 regex = { git = "https://github.com/TomKellyGenetics/regex.git" }
 lazy_static = "*"
 bio = "*"
-debruijn = { git = "https://github.com/10XGenomics/rust-debruijn.git" }
+debruijn = { rev = "2e16852f20aac47175120b73fa36ae29b9147d0f", git = "https://github.com/TomKellyGenetics/rust-debruijn.git" }
 fnv = "*"
 itertools = "*"
 bincode = "*"
@@ -20,9 +20,7 @@ pdqsort = "*"
 log = "*"
 env_logger = "*"
 chrono = "*"
-rand = "0.5"
+rand = "0.6.0"
 flate2 = "*"
-
-[dependencies.boomphf]
-git = "https://github.com/10XGenomics/rust-boomphf"
-features = ["serde"]
+rand_core = "0.2.2" 
+boomphf = { rev = "9458558d35b3302bcb885b6ba385735fedc7c5e3", git = "https://github.com/TomKellyGenetics/rust-boomphf.git", features = ["serde"]}
