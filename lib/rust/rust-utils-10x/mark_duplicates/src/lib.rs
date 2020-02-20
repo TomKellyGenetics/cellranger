@@ -250,7 +250,7 @@ pub fn mark_duplicates<W: Write>(markdup_flavors: &mut Vec<MarkDup>,
     let mut last_bam_key = (-1, -1);
 
     for r in bam.iter_chunk(start, end) {
-        let mut record = r.unwrap();
+        let record = r.unwrap();
         let curr_bam_key = (record.tid(), record.pos());
         if (curr_bam_key != last_bam_key) || (records_to_process.len() >= MAX_DEDUP_SIZE) {
             for md in markdup_flavors.iter_mut() {
