@@ -168,7 +168,7 @@ pub fn read_to_bam_record_opts(read: &graph_read::Read,
             new_header.header.as_bytes()
         };
 
-    rec.set(qname, &cigar, &adj_seq, &adj_qual);
+    rec.set(qname, serde::export::Some(&cigar), &adj_seq, &adj_qual);
 
     if set_augmented_tags {
         for (tag, value) in new_header.tags.iter() {

@@ -53,7 +53,7 @@ pub fn build_graph(reads: &Vec<&graph_read::Read>,
     filter::remove_censored_exts(true, &mut valid_kmers);
 
     let cmp = SimpleCompress::new(|mut a: Vec<u32>, b: &Vec<u32>| { a.extend(b); a.sort(); a.dedup(); a });
-    let graph = compress_kmers(true, cmp, &valid_kmers).finish();
+    let graph = compress_kmers(true, &cmp, &valid_kmers).finish();
 
     println!("# Edges: {}", graph.len());
     IndexedGraph::new(graph)

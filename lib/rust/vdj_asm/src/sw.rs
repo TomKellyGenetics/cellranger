@@ -33,7 +33,7 @@ lazy_static! {
     static ref MISMATCH_SCORE_VS_QUAL: [f64; (MAX_READ_QUAL + 1) as usize] = {
         let mut table: [f64; (MAX_READ_QUAL + 1) as usize] = [0.0f64; (MAX_READ_QUAL + 1) as usize];
         for q in 0..(MAX_READ_QUAL + 1) as usize {
-            table[q] = -(q as f64) / 10.0 - 3.0_f64.log10();;
+            table[q] = -(q as f64) / 10.0 - 3.0_f64.log10();
         }
         table
     };
