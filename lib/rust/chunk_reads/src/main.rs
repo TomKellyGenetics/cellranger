@@ -106,7 +106,7 @@ fn write_json<P: AsRef<Path>>(filename: P, val: &serde_json::Value) -> Result<()
 fn main() {
     if let Err(ref e) = run() {
         println!("error: {}", e);
-        println!("caused by: {}", e.cause());
+        println!("caused by: {}", e.as_fail());
 
         println!("------------");
         println!("If you believe this is a bug in chunk_reads, please report a bug to support@10xgenomics.com.");
