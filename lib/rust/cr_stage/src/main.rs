@@ -75,7 +75,7 @@ fn main() {
 
     } else if args.cmd_martian {
 
-        let mut stage_registry : HashMap<String, Box<MartianStage>> = HashMap::new();
+        let mut stage_registry : HashMap<String, Box<dyn MartianStage>> = HashMap::new();
         stage_registry.insert("mark_duplicates".to_string(), Box::new(cmd_mark_dups::MarkDuplicatesStage));
 
         println!("{}", env::args().join(" "));
