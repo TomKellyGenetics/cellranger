@@ -35,7 +35,7 @@ impl fmt::Display for ReadLocParseError {
         write!(f, "Invalid read Qname!")
     }
 }
-
+#[allow(bare_trait_objects)]
 impl Error for ReadLocParseError {
     fn description(&self) -> &str {
         match *self {
