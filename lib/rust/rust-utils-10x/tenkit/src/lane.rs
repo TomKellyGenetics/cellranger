@@ -48,7 +48,7 @@ impl Error for ReadLocParseError {
 
     fn cause(&self) -> Box<dyn Error> {
         match *self {
-            ReadLocParseError::ParseError(ref err) => Some(err as Error),
+            ReadLocParseError::ParseError(ref err) => Some(err as Box<dyn Error>),
             _ => None,
         }
     }
