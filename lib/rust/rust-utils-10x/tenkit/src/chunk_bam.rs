@@ -78,7 +78,7 @@ impl<'a> Iterator for BamTellIter<'a> {
 /// through reads from a given real byte offset.
 fn find_valid_virtual_offset<K: Eq>(bam: &mut bam::Reader,
                                     pos: u64,
-                                    chunk_bound_key: dyn Fn(bam::Record) -> Option<K>)
+                                    chunk_bound_key: Box<dyn Fn(bam::Record) -> Option<K>> )
                                     -> Option<i64> {
     use self::bam::Read;
     bam.seek((pos << 16) as i64)
@@ -137,7 +137,7 @@ pub fn bam_block_offsets<P: AsRef<Path>>(bam_path : &P) -> Vec<u64> {
 /// where end=None means EOF
 pub fn chunk_bam_records<P: AsRef<Path>, K: Eq>(bam_path: &P,
                                                 block_offsets: &Vec<u64>,
-                                                chunk_bound_key: dyn Fn(bam::Record) -> Option<K>,
+                                                chunk_bound_key: Box<dyn Fn(bam::Record) -> Option<K>> ,
                                                 chunk_size_gb: f64,
                                                 max_chunks: u64) -> Vec<(i64, Option<i64>)> {
     use self::bam::Read;
