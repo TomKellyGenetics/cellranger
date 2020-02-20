@@ -31,7 +31,7 @@ use utils;
 use bam::Read;
 
 pub struct MarkDuplicatesStage;
-use martian::utils::obj_decode;
+// use martian::utils::obj_decode;
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 /// Read accounting
@@ -221,7 +221,7 @@ fn major_barcode_proportion_within_chunk(bam: &mut bam::Reader,
                                          left_block_idx : usize,
                                          right_block_idx : usize,
                                          num_sample_per_chunk : i32) -> f64 {
-    use self::bam::Read;
+    // use self::bam::Read;
     use std::collections::btree_map::BTreeMap;
 
     let step = max(((right_block_idx - left_block_idx) as i32 / num_sample_per_chunk) as usize, 1);
@@ -544,12 +544,12 @@ impl MartianStage for MarkDuplicatesStage {
     }
 
     fn main(&self, json_args: JsonDict, outs: JsonDict) -> Result<JsonDict, Error> {
-        let args: ChunkArgs = obj_decode(json_args);
+        let args: ChunkArgs = obj_decode(&json_args);
         cmd_mark_dups(&args, outs)
     }
 
     fn join(&self, json_args: JsonDict, outs: JsonDict, _chunk_defs: Vec<JsonDict>, chunk_outs: Vec<JsonDict>) -> Result<JsonDict, Error> {
-        let args: StageArgs = obj_decode(json_args);
+        let args: StageArgs = obj_decode(&json_args);
 
         let mut final_outs = outs.clone();
 
@@ -600,7 +600,7 @@ impl MartianStage for MarkDuplicatesStage {
 
             for (lib_idx, lib) in chunk.iter().enumerate() {
                 let lt = &library_info[lib_idx].library_type;
-                let mut bc_summaries_lt = bc_summaries.get_mut(lt).unwrap();
+                let bc_summaries_lt = bc_summaries.get_mut(lt).unwrap();
 
                 // Merge the per-chunk barcode summaries into a single barcode summary
                 // for this library type.
