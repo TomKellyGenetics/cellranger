@@ -488,7 +488,7 @@ fn asm_bc<I: Iterator<Item=bam::Record>, T: Write>(mut bam_iter: I, barcode: &st
         contigs = result.1;
     }
 
-    println!("Assembled {} contigs in {} sec", contigs.len(), cc_start.to(PreciseTime::now()));
+    println!("Assembled {} contigs in {:?} sec", contigs.len(), cc_start.to(PreciseTime::now()));
     println!("maxrss: {}", perf::getrusage().ru_maxrss as u64);
 
 
@@ -855,7 +855,7 @@ pub fn get_matches(args: Args) {
             None => break,
         }
     }
-    println!("Got {} matches in {} sec", 2 * npairs - num_unmapped, cc_start.to(PreciseTime::now()));
+    println!("Got {} matches in {:?} sec", 2 * npairs - num_unmapped, cc_start.to(PreciseTime::now()));
     println!("Unmapped reads {}", num_unmapped);
 }
 

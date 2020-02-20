@@ -15,9 +15,9 @@ num = "*"
 libc = "*"
 bio = "*"
 rand = "0.5"
-debruijn = { git = "https://github.com/10XGenomics/rust-debruijn.git" }
+debruijn = { git = "https://github.com/10XGenomics/rust-debruijn.git", rev = "2e16852" }
 lazy_static = "*"
-lz4 = "1.23.1"
+lz4 = "1.8.1"
 fxhash = "*"
 failure = "*"
-rust-htslib = "^0.26.0"
+rust-htslib = { version = "0.24.0", default-features = false, features = ["serde"] }
