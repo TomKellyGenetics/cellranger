@@ -4,7 +4,7 @@ use std::fs::File;
 use std::cmp::{min, max};
 use std::path::Path;
 use std::mem::drop;
-use itertools::Itertools;
+// use itertools::Itertools;
 
 use bincode::deserialize_from;
 
@@ -68,7 +68,7 @@ impl<'a> Iterator for BamTellIter<'a> {
         let pos = self.bam.tell();
         match self.bam.read(&mut record) {
             Err(bam::ReadError::NoMoreRecord) => None,
-            Ok(T)   => Some(Ok((pos, record))),
+            Ok(_t_)   => Some(Ok((pos, record))),
             Err(err) => Some(Err(err)),
         }
     }
@@ -76,18 +76,19 @@ impl<'a> Iterator for BamTellIter<'a> {
 
 /// Find a valid virtual offset for iteration by scanning
 /// through reads from a given real byte offset.
+#[allow(bare_trait_objects)]
 fn find_valid_virtual_offset<K: Eq>(bam: &mut bam::Reader,
                                     pos: u64,
-                                    chunk_bound_key: Box<dyn Fn(bam::Record) -> Option<K>> )
+                                    chunk_bound_key: &Fn(bam::Record) -> Option<K> )
                                     -> Option<i64> {
-    use self::bam::Read;
+    // use self::bam::Read;
     bam.seek((pos << 16) as i64)
         .expect("Failed to seek BAM file");
     let mut n = 0;
 
     let mut prev_key = None;
     let tell_iter = BamTellIter { bam: bam };
-    for (cur_voff, read) in tell_iter.map(|x| x.unwrap().to_string()) {
+    for (cur_voff, read) in tell_iter.map(|x| x.unwrap()) {
         n += 1;
         if n == 1000 {
             warn!("Taking a long time to find a chunk boundary. Check your chunk_bound_key function?");
@@ -135,12 +136,13 @@ pub fn bam_block_offsets<P: AsRef<Path>>(bam_path : &P) -> Vec<u64> {
 /// Split a BAM along chunk boundaries
 /// Returns a list of tuples of (start, end) virtual offsets,
 /// where end=None means EOF
+#[allow(bare_trait_objects)]
 pub fn chunk_bam_records<P: AsRef<Path>, K: Eq>(bam_path: &P,
                                                 block_offsets: &Vec<u64>,
-                                                chunk_bound_key: Box<dyn Fn(bam::Record) -> Option<K>> ,
+                                                chunk_bound_key: &Fn(bam::Record) -> Option<K>,
                                                 chunk_size_gb: f64,
                                                 max_chunks: u64) -> Vec<(i64, Option<i64>)> {
-    use self::bam::Read;
+    // use self::bam::Read;
     
     // Compute chunk size
     let bam_bytes = fs::metadata(bam_path)
@@ -186,7 +188,7 @@ impl<'a> BamChunkIter<'a> {
     /// Takes a bam::Reader and a tuple of virtual offsets (start, end)
     /// where end==None signifies EOF
     pub fn new(bam: &'a mut bam::Reader, range: (i64, Option<i64>)) -> BamChunkIter<'a> {
-        use self::bam::Read;
+        // use self::bam::Read;
 
         bam.seek(range.0).expect("Failed to seek to start of BAM chunk");
 
