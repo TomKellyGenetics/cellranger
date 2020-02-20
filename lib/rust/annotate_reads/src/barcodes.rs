@@ -354,8 +354,8 @@ impl BarcodeUmiChecker {
     }
 
     fn get_sample_index_data(&self, bc_tags: &HashMap<String, String>) -> Option<SampleIndexData> {
-        let seq = bc_tags.get(SI_SEQ_TAG.into());
-        let qual = bc_tags.get(SI_QUAL_TAG.into());
+        let seq = bc_tags.get(&SI_SEQ_TAG.to_string());
+        let qual = bc_tags.get(&SI_QUAL_TAG.to_string());
         match (seq, qual) {
             (Some(seq), Some(qual)) => Some(SampleIndexData{
                 seq: seq.to_owned(),
@@ -366,8 +366,8 @@ impl BarcodeUmiChecker {
     }
 
     fn get_barcode_data(&self, bc_tags: &HashMap<String, String>) -> Option<BarcodeData> {
-        let bc_seq = bc_tags.get(RAW_BC_SEQ_TAG.into());
-        let bc_qual = bc_tags.get(RAW_BC_QUAL_TAG.into());
+        let bc_seq = bc_tags.get(&RAW_BC_SEQ_TAG.to_string());
+        let bc_qual = bc_tags.get(&RAW_BC_QUAL_TAG.to_string());
         match (bc_seq, bc_qual) {
             (Some(seq), Some(qual)) => Some(self.check_barcode(seq.as_bytes(), qual.as_bytes())),
             _ => None,
@@ -375,8 +375,8 @@ impl BarcodeUmiChecker {
     }
 
     fn get_umi_data(&self, bc_tags: &HashMap<String, String>) -> Option<UmiData> {
-        let umi_seq = bc_tags.get(RAW_UMI_SEQ_TAG.into());
-        let umi_qual = bc_tags.get(RAW_UMI_QUAL_TAG.into());
+        let umi_seq = bc_tags.get(&RAW_UMI_SEQ_TAG.to_string());
+        let umi_qual = bc_tags.get(&RAW_UMI_QUAL_TAG.to_string());
         match (umi_seq, umi_qual) {
             (Some(seq), Some(qual)) => Some(self.check_umi(seq.as_bytes(), qual.as_bytes())),
             _ => None,
