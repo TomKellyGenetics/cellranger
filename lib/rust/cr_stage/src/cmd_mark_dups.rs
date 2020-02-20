@@ -31,6 +31,7 @@ use utils;
 use bam::Read;
 
 pub struct MarkDuplicatesStage;
+use martian::utils::obj_decode;
 
 #[derive(Serialize, Deserialize, Default, Clone)]
 /// Read accounting
