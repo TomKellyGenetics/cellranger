@@ -158,7 +158,7 @@ pub fn chunk_bam_records<P: AsRef<Path>, K: Eq>(bam_path: &P,
     let block_step = max(1, block_offsets.len() / num_chunks as usize);
 
     // Real block offsets to start boundary-searches at
-    let start_offsets = block_offsets.into_iter().step(block_step).skip(1);
+    let start_offsets = block_offsets.into_iter().step_by(block_step).skip(1);
 
     // Virtual offsets to start chunks at
     let mut start_voffs: Vec<i64> = start_offsets
