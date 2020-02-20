@@ -5,7 +5,7 @@ authors = ["Patrick Marks <patrick@10xgenomics.com>"]
 
 [dependencies]
 memchr = ">=0.1"
-lz4 = ">=1.20"
+lz4 = "1.8.1"
 flate2 = ">=0.2.18"
 fastq = { git = "https://github.com/pryvkin10x/fastq-rs.git", rev = "4a66d79"}
 serde = "1.0"
