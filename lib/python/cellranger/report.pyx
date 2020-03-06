@@ -502,9 +502,9 @@ cdef class _RawFastqMetricsCache:
         get_metric('read_with_perfect_primer_or_homopolymer_frac').set_value(primer_or_homopolymer_reads, total_reads)
 
     cdef set_seq_qual_metrics(cache,
-                              bytes seq,
+                              const seq,
                               const unsigned char[:] qvs,
-                              bytes seq_type):
+                              const seq_type):
         cdef _RawFastqSeqMetrics metrics
         if seq_type in cache._seq_types:
             metrics = cache._seq_types[seq_type]
