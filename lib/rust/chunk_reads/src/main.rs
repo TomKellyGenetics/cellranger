@@ -248,6 +248,7 @@ impl<W: Write> Write for StreamWrapper<W> {
         self.s.as_mut().unwrap().flush()
     }
 }
+#[allow(unused_must_use)]
 impl<W: Write> Drop for StreamWrapper<W> {
     fn drop(&mut self) {
         match self.s.take() {
