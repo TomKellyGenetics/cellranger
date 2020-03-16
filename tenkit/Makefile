@@ -12,7 +12,7 @@ GOBINS=barcodeqc godemux q30count
 
 export GOPATH=$(shell pwd)/lib/go
 
-GO_VERSION=$(strip $(shell go version | sed 's/.*go\([0-9]*\.[0-9]*\).*/\1/'))
+GO_VERSION=$(echo $(echo go version | sed 's/.*go\([0-9]*\.[0-9]*\).*/\1/'))
 
 # Older versions of Go use the "-X foo bar" syntax.  Newer versions either warn
 # or error on that syntax, and use "-X foo=bar" instead.
