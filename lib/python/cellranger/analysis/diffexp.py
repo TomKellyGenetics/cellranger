@@ -84,13 +84,13 @@ def compute_sseq_params(x, zeta_quantile=SSEQ_ZETA_QUANTILE):
     ## Compute delta, the optimal shrinkage towards zeta_hat
     ## This defines a linear function that shrinks the MoM dispersion estimates
     mean_phi_mm_g = np.mean(phi_mm_g[use_g])
-    delta = (np.sum(np.square(phi_mm_g[use_g] - mean_phi_mm_g))//float(G-1)) / \
-            (np.sum(np.square(phi_mm_g[use_g] - zeta_hat))//float(G-2))
+    delta = (np.sum(np.square(phi_mm_g[use_g] - mean_phi_mm_g))/float(G-1)) / \
+            (np.sum(np.square(phi_mm_g[use_g] - zeta_hat))/float(G-2))
 
 
     ## Compute the shrunken dispersion estimates
     ## Interpolate between the MoM estimates and zeta_hat by delta
-    phi_g = np.full(float(G), np.nan)
+    phi_g = np.full(G, np.nan)
     if np.any(phi_mm_g[use_g] > 0):
         phi_g[use_g] = (1-delta)*phi_mm_g[use_g] + delta*zeta_hat
     else:
