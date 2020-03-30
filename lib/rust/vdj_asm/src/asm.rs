@@ -3,7 +3,6 @@
 //
 
 use debruijn::Kmer;
-use debruijn::fx::FxHashMap;
 use graph::IndexedGraph;
 use graph::Kmer1;
 use graph::ReadDb;
@@ -18,6 +17,7 @@ use asm_helper;
 use constants::{UmiType, ReadType, QUAL_OFFSET, MAX_NUM_KMERS, PROCESSED_UMI_TAG, KMER_LEN_BANDED_ALIGN, WINDOW_SIZE_BANDED_ALIGN};
 use std::io::{Write};
 use rust_htslib::bam;
+use fxhash::FxHashMap;
 
 use std::collections::{HashSet, HashMap};
 
@@ -115,8 +115,20 @@ impl UmiCounter {
             .collect()
     }
 
+    pub fn count_good_umis(&self, min_umi_reads: usize) -> usize {
+        self.counts.iter()
+            .filter(|&(umi, count)| *count >= min_umi_reads && *umi != 0)
+            .count()
+    }
+
     pub fn get(&self, umi: &UmiType) -> Option<usize> {
         self.counts.get(umi).cloned()
+    }
+
+    pub fn reset_counts(&mut self) {
+        for (_, val) in self.counts.iter_mut() {
+            *val = 0;
+        }
     }
 }
 

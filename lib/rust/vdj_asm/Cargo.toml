@@ -4,18 +4,25 @@ version = "0.1.0"
 authors = ["Sofia <sofia@10xtechnologies.com>"]
 
 [dependencies]
-flate2 = "*"
-itertools = "^0.6"
-docopt = "*"
-serde = "*"
+flate2 = ">=0.2.18"
+itertools = "^0.7"
+docopt = "^1.0.0"
+serde = { version = "1", features = ["derive"] }
 serde_derive = "*"
 serde_json = "*"
 time = "*"
 num = "*"
 libc = "*"
-bio = "*"
-rand = "0.3"
-rust-htslib = "0.13.0"
-debruijn = { git = "https://github.com/10XGenomics/rust-debruijn.git" }
+bio = ">=0.22"
+rand = "0.5"
+#rust-htslib = { git = "https://github.com/rust-bio/rust-htslib.git", branch="master"}
+#rust-htslib = { git = "https://github.com/TomKellyGenetics/rust-htslib.git", rev = "4356dfd9c50e2b38777b621df905cbc6bd0feba7", default-features = false, features = ["serde"] }
+rust-htslib = { version = "0.24.0", default-features = false, features = ["serde"] }
+#rust-htslib = { git = "https://github.com/TomKellyGenetics/rust-htslib.git", default-features = false, features = ["serde"], rev = "2acc60e" }
+lz4 = "1.8.1"
+fxhash = "*"
+filter = "*"
+failure = "*"
+#debruijn = { git = "https://github.com/10XGenomics/rust-debruijn.git", rev = "1fbe73a9478c9fec364e1" }
+debruijn = { rev = "2e16852f20aac47175120b73fa36ae29b9147d0f", git = "https://github.com/TomKellyGenetics/rust-debruijn.git" }
 lazy_static = "*"
-lz4 = "*"

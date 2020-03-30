@@ -11,7 +11,8 @@ use std::hash::{Hash, SipHasher, Hasher};
 use std::fmt::Display;
 use std::io::Read;
 use std::fs::File;
-use std::path::{Path};
+use std::path::{Path, PathBuf};
+use std::ffi::OsStr;
 use constants::NUCS;
 use lz4;
 
@@ -326,33 +327,37 @@ pub fn drop_read(subsample_rate: f64, name: &str) -> bool {
             key.hash(&mut hasher);
 
             let hash = hasher.finish();
-            let seed = [(hash >> 32) as u32, hash as u32, (hash >> 32) as u32, hash as u32];
+            
+            let mut seed = [0u8; 16];
+            for i in 0..8 {
+                seed[i] = (hash >> (i*8) & 0xFF) as u8;
+            }
             let mut rng: rand::XorShiftRng = rand::SeedableRng::from_seed(seed);
             rng.gen::<f64>() > subsample_rate
         }
     }
 }
 
-pub fn find_file_maybe_compressed(prefix: &str) -> Option<String> {
-    if Path::new(prefix).exists() {
-        return Some(prefix.to_owned())
-    } else if (Path::new(&(prefix.clone().to_owned() + ".lz4"))).exists() {
-        return Some(prefix.to_owned() + ".lz4")
+pub fn find_file_maybe_compressed<P: AsRef<Path>>(prefix: P) -> Option<PathBuf> {
+    if prefix.as_ref().exists() {
+        return Some(PathBuf::from(prefix.as_ref()));
+    } else if (prefix.as_ref().with_extension("lz4")).exists() {
+        return Some(prefix.as_ref().with_extension("lz4"));
     }
     None
 
 }
 
-pub fn open_lz4(filename: &str) -> lz4::Decoder<File> {
+pub fn open_lz4<P: AsRef<Path>>(filename: P) -> lz4::Decoder<File> {
     let f = File::open(filename).expect("Failed to open file for reading");
     lz4::Decoder::new(f).expect("Failed to create lz4 decoder")
 }
 
-pub fn open_maybe_compressed(filename: &str) -> Box<Read> {
-    match filename.ends_with(".lz4") {
-        true => Box::new(open_lz4(filename)) as Box<Read>,
-        false => Box::new(File::open(filename)
-                          .expect("Failed to open file for reading")) as Box<Read>,
+pub fn open_maybe_compressed<P: AsRef<Path>>(filename: P) -> Box<dyn Read> {
+    match filename.as_ref().extension().and_then(OsStr::to_str) {
+        Some("lz4") => Box::new(open_lz4(filename)) as Box<dyn Read>,
+        _ => Box::new(File::open(filename)
+                      .expect("Failed to open file for reading")) as Box<dyn Read>,
     }
 }
 
@@ -377,7 +382,7 @@ mod tests {
 
     #[test]
     fn test_replace_ns() {
-        let seed: &[_] = &[1, 2, 3, 4];
+        let seed = [0u8; 32];
         let mut rng : StdRng = SeedableRng::from_seed(seed);
         assert_eq!(replace_ns_rand(&"ACGT".to_string(), &mut rng), "ACGT".to_string());
         assert!(replace_ns_rand(&"ACGTNNN".to_string(), &mut rng).starts_with("ACGT"));
