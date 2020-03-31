@@ -160,7 +160,6 @@ pub fn alen(read: &Record) -> i64 {
     for c in read.cigar().into_iter() {
         match *c {
             Cigar::Match(l) | Cigar::Del(l) | Cigar::RefSkip(l) | Cigar::Equal(l) | Cigar::Diff(l) => alen += l as i64,
-            Cigar::Back(l) => alen -= l as i64,
             _ => ()
         }
     }

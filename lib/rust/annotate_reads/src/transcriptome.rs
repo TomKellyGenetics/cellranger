@@ -29,6 +29,7 @@ pub struct AnnotationData {
     pub rescued:        bool,
 }
 
+#[allow(unused_must_use)]
 impl AnnotationData {
     fn new() -> AnnotationData {
         AnnotationData {
@@ -100,7 +101,7 @@ impl AnnotationData {
             record.push_aux(REGION_TAG, &Aux::Char(tag.as_bytes()[0]));
         }
         if let Some(tag) = self.make_mm_tag() {
-            record.push_aux(MULTIMAPPER_TAG, &Aux::Integer(tag));
+            record.push_aux(MULTIMAPPER_TAG, &Aux::Integer(tag as i64));
         }
         if let Some(tag) = self.make_an_tag() {
             record.push_aux(ANTISENSE_TAG, &Aux::String(tag.as_bytes()));
@@ -225,7 +226,6 @@ enum CigarType {
     Pad,
     Equal,
     Diff,
-    Back,
 }
 
 // TODO: rust_htslib now has an improved CIGAR API, so we should try using that if it's simpler
@@ -247,7 +247,6 @@ impl FlatCigar {
             CigarType::Pad      => 'P',
             CigarType::Equal    => '=',
             CigarType::Diff     => 'X',
-            CigarType::Back     => 'B',
         };
         return format!("{}{}", self.len, symbol)
     }
@@ -264,7 +263,6 @@ fn flatten_cigar(cig: &Cigar) -> FlatCigar {
         &Cigar::Pad(len)      => FlatCigar { op: CigarType::Pad, len: len },
         &Cigar::Equal(len)    => FlatCigar { op: CigarType::Equal, len: len },
         &Cigar::Diff(len)     => FlatCigar { op: CigarType::Diff, len: len },
-        &Cigar::Back(len)     => FlatCigar { op: CigarType::Back, len: len },
     }
 }
 

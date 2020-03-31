@@ -404,7 +404,7 @@ fn map_chroms_to_genomes(chroms: &[String], genomes: &[String]) -> HashMap<Strin
 impl<'a> Reporter<'a> {
     pub fn new(chroms: Vec<String>, genomes: Vec<String>, transcript_idx: &'a TranscriptIndex, params: &'a AnnotationParams) -> Reporter<'a> {
         let chroms_to_genomes = map_chroms_to_genomes(&chroms, &genomes);
-        let seed = [1, 2, 3, 4];
+        let seed = [0u8; 16];
         let mut reporter = Reporter {
             genomes:            genomes,
             chroms:             chroms,
@@ -622,7 +622,7 @@ impl<'a> Reporter<'a> {
             &Some(ref bc_data) => {
                 let ref mut bc_metrics = self.metrics.barcode_metrics;
 
-                if self.rng.next_f64() < TOP_RAW_SEQ_SAMPLE_RATE {
+                if self.rng.gen::<f64>() < TOP_RAW_SEQ_SAMPLE_RATE {
                     bc_metrics.top_raw_bcs.add(&bc_data.raw_seq);
                 }
 
@@ -646,10 +646,10 @@ impl<'a> Reporter<'a> {
             &Some(ref umi_data) => {
                 let ref mut umi_metrics = self.metrics.umi_metrics;
 
-                if self.rng.next_f64() < TOP_RAW_SEQ_SAMPLE_RATE {
+                if self.rng.gen::<f64>() < TOP_RAW_SEQ_SAMPLE_RATE {
                     umi_metrics.top_raw_umis.add(&umi_data.raw_seq);
                 }
-                if umi_data.is_valid && self.rng.next_f64() < TOP_CORRECTED_SEQ_SAMPLE_RATE {
+                if umi_data.is_valid && self.rng.gen::<f64>() < TOP_CORRECTED_SEQ_SAMPLE_RATE {
                     umi_metrics.top_processed_umis.add(&umi_data.raw_seq);
                 }
 

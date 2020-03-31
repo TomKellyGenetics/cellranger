@@ -164,7 +164,7 @@ impl<T: MetricGroup> PrefixGroup<T> {
 
     pub fn merge(&mut self, other: &Self) {
         for (prefix, other_group) in &other.mapping {
-            let mut group = self.mapping.entry(prefix.clone()).or_insert(T::new());
+            let group = self.mapping.entry(prefix.clone()).or_insert(T::new());
             group.merge(&other_group);
         }
     }
@@ -324,7 +324,7 @@ impl LengthHistogram {
             if (curr_cutoff_idx < cutoffs.len() - 1) && (value >= &cutoffs[curr_cutoff_idx+1]) {
                 curr_cutoff_idx += 1;
             }
-            let mut binned_count = binned_histogram.get_mut(&cutoffs[curr_cutoff_idx]).unwrap();
+            let binned_count = binned_histogram.get_mut(&cutoffs[curr_cutoff_idx]).unwrap();
             *binned_count += *count;
         }
 

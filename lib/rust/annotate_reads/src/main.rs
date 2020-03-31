@@ -114,7 +114,7 @@ fn annotate_reads_main(args: Args) {
     let bc_umi_checker = barcodes::BarcodeUmiChecker::new(&args.arg_bc_counts.unwrap(), &args.arg_bc_whitelist.unwrap(), gem_group);
 
     println!("Setting up BAMs");
-    let in_bam = bam::Reader::from_path(Path::new(&args.arg_in_bam.unwrap())).unwrap();
+    let mut in_bam = bam::Reader::from_path(Path::new(&args.arg_in_bam.unwrap())).unwrap();
     let mut out_header = Header::from_template(in_bam.header());
 
     // Append PG tag
