@@ -145,7 +145,7 @@ fn index_transcripts_hashset<K: Kmer + Serialize + Hash + Eq>(args: Args) {
     let mut writer = BufWriter::new(File::create(&Path::new(&args.arg_out_idx.unwrap()))
                                     .expect("Failed to create index file"));
 
-    bincode::serialize_into(&mut writer, &idx, bincode::Infinite)
+    bincode::serialize_into(&mut writer, &idx)
         .expect("Failed to serialize index");
 }
 
@@ -170,7 +170,7 @@ fn index_transcripts_mphf<K: Kmer + Serialize>(args: Args) {
                                     .expect("Failed to create index file"));
 
     info!("Writing index");
-    bincode::serialize_into(&mut writer, &idx, bincode::Infinite)
+    bincode::serialize_into(&mut writer, &idx)
         .expect("Failed to serialize index");
 }
 
@@ -197,10 +197,10 @@ fn map_reads(args: Args) {
     // Use Box here to make the match arms consistent
     let idx = match idx_type {
         KmerIndexType::BBHashIndex => {
-            Box::new(load_index::<BBHashKmerIndex<MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<KmerPresenceQuery<MyKmer>>
+            Box::new(load_index::<BBHashKmerIndex<MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<dyn KmerPresenceQuery<MyKmer>>
         },
         KmerIndexType::HashSetIndex => {
-            Box::new(load_index::<HashSetKmerIndex<MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<KmerPresenceQuery<MyKmer>>
+            Box::new(load_index::<HashSetKmerIndex<MyKmer>, BufReader<File>>(&mut idx_reader)) as Box<dyn KmerPresenceQuery<MyKmer>>
         },
     };
 

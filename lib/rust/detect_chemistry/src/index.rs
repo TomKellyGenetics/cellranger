@@ -10,7 +10,6 @@ use fnv::FnvHashSet;
 use bio::io::{fasta};
 use debruijn::{Kmer, Vmer};
 use debruijn::dna_string::DnaString;
-use itertools::Itertools;
 use pdqsort;
 use bincode;
 use serde::de::DeserializeOwned;
@@ -84,7 +83,7 @@ pub fn index_transcripts_hashset<R: Read, K: Kmer + Hash>(fa_reader: fasta::Read
 
             let dna_string = DnaString::from_acgt_bytes(&rec.seq());
 
-            for kmer in dna_string.iter_kmers().step(1+skip_bases) {
+            for kmer in dna_string.iter_kmers().step_by(1+skip_bases) {
                 idx.kmers.insert(kmer);
             }
         }
@@ -103,7 +102,7 @@ pub fn index_transcripts_mphf<R: Read, K: Kmer + Hash>(fa_reader: fasta::Reader<
 
             let dna_string = DnaString::from_acgt_bytes(&rec.seq());
 
-            for kmer in dna_string.iter_kmers().step(1+skip_bases) {
+            for kmer in dna_string.iter_kmers().step_by(1+skip_bases) {
                 kmers.push(kmer);
             }
         }
@@ -115,7 +114,7 @@ pub fn index_transcripts_mphf<R: Read, K: Kmer + Hash>(fa_reader: fasta::Reader<
     kmers.dedup();
 
     info!("Hashing {} unique kmers", kmers.len());
-    let mphf = Mphf::new(gamma, &kmers, None);
+    let mphf = Mphf::new(gamma, &kmers);
 
     info!("Arranging {} unique kmers", kmers.len());
     // Permuting in-place murders the cache, so copy
@@ -129,12 +128,12 @@ pub fn index_transcripts_mphf<R: Read, K: Kmer + Hash>(fa_reader: fasta::Reader<
 
 // Get the type of kmer index stored in a file
 pub fn get_index_type<R: Read>(mut reader: &mut R) -> KmerIndexType {
-     bincode::deserialize_from(&mut reader, bincode::Infinite)
+     bincode::deserialize_from(&mut reader)
         .expect("Failed to read index type")
 }
 
 pub fn load_index<I: DeserializeOwned, R: Read>(mut reader: &mut R) -> I {
-    let index: I = bincode::deserialize_from(&mut reader, bincode::Infinite)
+    let index: I = bincode::deserialize_from(&mut reader)
         .expect("Failed to deserialize index");
     index
 }

@@ -4,26 +4,29 @@ version = "0.1.0"
 authors = ["Paul Ryvkin <paul.ryvkin@10xgenomics.com>"]
 
 [dependencies]
-docopt = "*"
-serde = { version = "1.0", features = ["derive"] }
-regex = "*"
+docopt = "^1.0.0"
+serde = { version = ">=1.0", features = ["derive"] }
+memchr = "2.3.2"
+derive = "1.0.0"
+regex = { git = "https://github.com/TomKellyGenetics/regex.git" }
 lazy_static = "*"
-bio = "*"
-debruijn = { git = "https://github.com/10XGenomics/rust-debruijn.git" }
+num = "*"
+bio = "0.30.0"
+#debruijn = { git = "https://github.com/10XGenomics/rust-debruijn.git", rev = "2e16852" }
+debruijn = { rev = "2e16852f20aac47175120b73fa36ae29b9147d0f", git = "https://github.com/TomKellyGenetics/rust-debruijn.git" }
 fnv = "*"
 itertools = "*"
-bincode = "*"
-serde_json = "*"
+bincode = "1.2.1"
+serde_json = "1.0.0"
+serde_derive = "1.0.0"
 pdqsort = "*"
 log = "*"
 env_logger = "*"
 chrono = "*"
-rand = "*"
-flate2 = "*"
-
-[dependencies.boomphf]
-git = "https://github.com/10XGenomics/rust-boomphf"
-features = ["serde"]
+rand = "0.6"
+rand_core = "0.2.2"
+flate2 = ">=0.2.18"
+boomphf = { rev = "9458558d35b3302bcb885b6ba385735fedc7c5e3", git = "https://github.com/TomKellyGenetics/rust-boomphf.git", features = ["serde"]}
 
 [profile.release]
 #debug = true

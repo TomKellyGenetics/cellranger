@@ -3,7 +3,7 @@
 //
 
 use std::io::{Read};
-use itertools::Itertools;
+//use itertools::Itertools;
 
 use bio::io::fastq;
 
@@ -58,14 +58,14 @@ pub fn map_reads<K: Kmer, I: index::KmerPresenceQuery<K> + ?Sized, R: Read> (ind
         .map(|x| x.expect("Failed to parse FASTQ record"))
         .take(initial_reads)
         .skip(start_at)
-        .step(every) {
+        .step_by(every) {
 
             let dna_string = DnaString::from_acgt_bytes(&rec.seq());
 
             let mut sense = 0usize;
             let mut anti = 0usize;
 
-            for kmer in dna_string.iter_kmers().step(1+skip_bases) {
+            for kmer in dna_string.iter_kmers().step_by(1+skip_bases) {
                 sense += index.contains(&kmer) as usize;
                 anti += index.contains(&kmer.rc()) as usize;
                 if (sense >= min_kmers) || (anti >= min_kmers) {
