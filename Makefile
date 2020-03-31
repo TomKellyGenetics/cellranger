@@ -43,6 +43,8 @@ louvain-clean:
 
 lib/bin:
 	mkdir -p lib/bin
+	cp lib/shell/crconverter_open.sh lib/bin/crconverter
+	cp lib/shell/crconverter_open.sh lib/bin/vlconverter
 
 $(RUST_BINS): lib/bin
 	set -e ; \
